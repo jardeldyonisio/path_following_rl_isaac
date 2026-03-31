@@ -42,8 +42,6 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser(description="Train TurtleBot3 navigation with TD3")
 parser.add_argument("--num_envs", type=int, default=16,
                     help="Number of parallel environments.")
-parser.add_argument("--headless", action="store_true", default=False,
-                    help="Run without GUI. Much faster for training.")
 parser.add_argument("--max_iterations", type=int, default=1000,
                     help="Number of TD3 update iterations.")
 parser.add_argument("--seed", type=int, default=42,
@@ -56,7 +54,7 @@ simulation_app = app_launcher.app
 
 # --- Safe to import Isaac/Omniverse modules now ---
 from isaaclab.envs import ManagerBasedRLEnv
-from isaaclab_tasks.utils.wrappers.skrl import SkrlVecEnvWrapper
+from isaaclab_rl.skrl import SkrlVecEnvWrapper
 
 import skrl
 from skrl.agents.torch.td3 import TD3, TD3_DEFAULT_CONFIG
@@ -84,7 +82,7 @@ env_cfg = TurtlebotNavEnvCfg()
 env_cfg.scene.num_envs = args.num_envs
 
 env = ManagerBasedRLEnv(cfg=env_cfg)
-env = SkrlVecEnvWrapper(env)
+env = SkrlVecEnvWrapper(env, ml_framework="torch")
 
 device = env.device
 
@@ -241,7 +239,7 @@ total_timesteps = args.max_iterations * args.num_envs
 
 trainer_cfg = {
     "timesteps": total_timesteps,
-    "headless":  args.headless,
+
 }
 
 trainer = SequentialTrainer(cfg=trainer_cfg, env=env, agents=agent)

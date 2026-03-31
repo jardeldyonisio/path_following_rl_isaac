@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 
 from isaaclab.managers import ActionTermCfg, ActionTerm, SceneEntityCfg
 from isaaclab.utils import configclass
+from dataclasses import MISSING
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -297,8 +298,14 @@ def reset_robot_pose(env: ManagerBasedRLEnv, env_ids: torch.Tensor):
     """
     robot = env.scene["robot"]
 
-    # Generate starting positions from the first waypoint of each env's path
-    # (waypoints are generated in reset_waypoints which runs first)
+    # Safety initialiser: if waypoints don't exist yet (first ever reset),
+    # create zero-filled tensors so the rest of this function doesn't crash.
+    # reset_waypoints will overwrite them with real values immediately after.
+    if not hasattr(env, 'waypoints'):
+        num_waypoints = 15
+        env.waypoints = torch.zeros(env.num_envs, num_waypoints, 2, device=env.device)
+        env.waypoint_idx = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
+
     start_pos = env.waypoints[env_ids, 0, :]  # (len(env_ids), 2)
 
     # Build full pose tensors. Isaac Lab expects:

@@ -13,21 +13,17 @@ SceneCfg dataclass, and the framework handles spawning + physics.
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
+from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 
 # ---------------------------------------------------------------------------
 # Robot Asset
 # ---------------------------------------------------------------------------
-# Isaac Lab ships a TurtleBot3 Burger USD on the Nucleus server.
-# ArticulationCfg wraps the USD and tells Isaac how to treat it as a
-# physics articulation (wheels, joints, etc.).
 TURTLEBOT3_CFG = ArticulationCfg(
-    # Path on the Omniverse Nucleus (downloaded automatically on first run).
     prim_path="/World/Robot",
     spawn=sim_utils.UsdFileCfg(
-        usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Robots/Clearpath/TurtleBot3/turtlebot3_burger.usd",
+        usd_path="/home/lognav/turtlebot3_ws/src/turtlebot3/turtlebot3_description/urdf/turtlebot3_burger/turtlebot3_burger.usd",
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
             retain_accelerations=False,
@@ -43,11 +39,30 @@ TURTLEBOT3_CFG = ArticulationCfg(
             solver_velocity_iteration_count=0,
         ),
     ),
-    # Where to place the robot at startup (before reset() is called).
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.01),  # Slightly above ground to avoid z-fighting
-        joint_pos={".*": 0.0},  # All joints start at 0
+        pos=(0.0, 0.0, 0.01),
+        joint_pos={".*": 0.0},
     ),
+    # ---------------------------------------------------------------------------
+    # Actuators block — REQUIRED by Isaac Lab.
+    # Tells the physics engine how to control each joint.
+    #
+    # ImplicitActuatorCfg is the simplest option: the physics engine handles
+    # the motor model internally. You set a velocity target and PhysX drives
+    # the joint towards it. This is perfect for wheel velocity control.
+    #
+    # ".*wheel.*" is a regex that matches both wheel joints regardless of
+    # their exact name (wheel_left_joint, wheel_right_joint, etc.)
+    # ---------------------------------------------------------------------------
+    actuators={
+        "wheels": ImplicitActuatorCfg(
+            joint_names_expr=[".*wheel.*"],
+            effort_limit=1.0,         # Nm — TurtleBot3 Burger motor limit
+            velocity_limit=10.0,      # rad/s — well above our max needed
+            stiffness=0.0,            # 0 stiffness = velocity control mode
+            damping=1.0,              # resistance that stabilises the wheel
+        ),
+    },
 )
 
 
@@ -64,14 +79,12 @@ class NavSceneCfg(InteractiveSceneCfg):
     """
 
     # --- Ground plane ---
-    # AssetBaseCfg is used for static, non-articulated objects.
     ground = AssetBaseCfg(
         prim_path="/World/GroundPlane",
         spawn=sim_utils.GroundPlaneCfg(),
     )
 
     # --- Lighting ---
-    # A distant light simulates sunlight. Required for rendering.
     light = AssetBaseCfg(
         prim_path="/World/Light",
         spawn=sim_utils.DistantLightCfg(
@@ -81,11 +94,8 @@ class NavSceneCfg(InteractiveSceneCfg):
     )
 
     # --- The Robot ---
-    # The 'robot' attribute name is important: we reference it later as
-    # scene["robot"] inside the environment.
+    # {ENV_REGEX_NS} expands to /World/envs/env_0, env_1, etc.
+    # enabling multiple parallel environments automatically.
     robot: ArticulationCfg = TURTLEBOT3_CFG.replace(
         prim_path="{ENV_REGEX_NS}/Robot"
-        # {ENV_REGEX_NS} is a special Isaac Lab token that expands to
-        # /World/envs/env_0, /World/envs/env_1, etc. when you run
-        # multiple parallel environments. Very useful for vectorized training.
     )

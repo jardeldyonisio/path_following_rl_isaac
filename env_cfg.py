@@ -179,15 +179,17 @@ class EventsCfg:
     This is also where Domain Randomization lives in the future.
     """
 
-    # On every episode reset: randomize robot starting pose
-    reset_robot_pose = EventTermCfg(
-        func=mdp.reset_robot_pose,
-        mode="reset",  # Triggers on every env.reset()
-    )
-
-    # On every episode reset: generate a new random waypoint path
+    # IMPORTANT: reset_waypoints must come BEFORE reset_robot_pose.
+    # Isaac Lab executes events in declaration order, and reset_robot_pose
+    # reads env.waypoints which is created by reset_waypoints.
     reset_waypoints = EventTermCfg(
         func=mdp.reset_waypoints,
+        mode="reset",
+    )
+
+    # Runs after waypoints are ready — places robot at path start
+    reset_robot_pose = EventTermCfg(
+        func=mdp.reset_robot_pose,
         mode="reset",
     )
 
