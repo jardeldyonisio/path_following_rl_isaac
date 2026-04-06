@@ -37,6 +37,105 @@ def _quat_to_yaw(quat: torch.Tensor):
 def _wrap_angle(angle: torch.Tensor):
     return (angle + math.pi) % (2 * math.pi) - math.pi
 
+def _draw_waypoints_debug(env: "ManagerBasedRLEnv"):
+    if not hasattr(env, "waypoints") or env.num_envs == 0:
+        return
+
+    # Lazy init of VisualizationMarkers
+    if not hasattr(env, "_waypoint_markers"):
+        try:
+            from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+            import isaaclab.sim as sim_utils
+            import os
+            # Configure a sphere marker for waypoints and a cylinder for path segments
+            marker_cfg = VisualizationMarkersCfg(
+                prim_path="/Visuals/Waypoints",
+                markers={
+                    "waypoint": sim_utils.SphereCfg(
+                        radius=0.08,
+                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.6, 1.0)),
+                    ),
+                    "active": sim_utils.SphereCfg(
+                        radius=0.12,
+                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.2, 0.2)),
+                    ),
+                    "segment": sim_utils.CylinderCfg(
+                        radius=0.025,
+                        height=1.0,  # Will be scaled per segment
+                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 1.0, 0.2)),
+                    ),
+                },
+            )
+            env._waypoint_markers = VisualizationMarkers(cfg=marker_cfg)
+        except Exception as e:
+            env._waypoint_markers = None
+            print(f"[DEBUG] Could not initialize VisualizationMarkers: {e}")
+
+    markers = env._waypoint_markers
+    if markers is None:
+        return
+
+    # Draw only env_0 for clarity.
+    env_id = 0
+    wp = env.waypoints[env_id]
+    if wp.numel() == 0:
+        return
+
+    active_idx = int(env.waypoint_idx[env_id].item()) if hasattr(env, "waypoint_idx") else 0
+    active_idx = max(0, min(active_idx, wp.shape[0] - 1))
+
+    # Visualize waypoints as spheres, highlight the active one
+    waypoint_poses = []
+    waypoint_types = []
+    for i, p in enumerate(wp):
+        pos = (float(p[0]), float(p[1]), 0.05)
+        waypoint_poses.append(pos)
+        waypoint_types.append(1 if i == active_idx else 0)  # 1: active, 0: waypoint
+
+    # Visualize path segments as cylinders between waypoints
+    segment_poses = []
+    segment_orientations = []
+    segment_types = []
+    for i in range(len(wp) - 1):
+        p0 = np.array([float(wp[i][0]), float(wp[i][1]), 0.05])
+        p1 = np.array([float(wp[i+1][0]), float(wp[i+1][1]), 0.05])
+        center = (p0 + p1) / 2
+        vec = p1 - p0
+        height = np.linalg.norm(vec)
+        if height < 1e-4:
+            continue
+        # Orientation: align cylinder with segment
+        yaw = math.atan2(vec[1], vec[0])
+        import torch
+        try:
+            # Try IsaacLab's new location for quat_from_angle_axis
+            from isaaclab.sim.math import quat_from_angle_axis
+        except ImportError:
+            # Fallback: implement minimal version
+            def quat_from_angle_axis(angle, axis):
+                half = angle / 2
+                w = torch.cos(half)
+                xyz = torch.sin(half).unsqueeze(-1) * axis
+                return torch.cat([w.unsqueeze(-1), xyz], dim=-1)
+        quat = quat_from_angle_axis(torch.tensor([yaw]), torch.tensor([0.0, 0.0, 1.0]))[0].numpy()
+        segment_poses.append(tuple(center))
+        segment_orientations.append(tuple(quat))
+        segment_types.append(2)  # 2: segment
+
+    # Draw waypoints
+    markers.visualize(
+        torch.tensor(waypoint_poses),
+        torch.tensor([[1.0, 0.0, 0.0, 0.0]] * len(waypoint_poses)),
+        marker_indices=np.array(waypoint_types, dtype=np.int32),
+    )
+    # Draw path segments
+    if segment_poses:
+        markers.visualize(
+            torch.tensor(segment_poses),
+            torch.tensor(segment_orientations),
+            marker_indices=np.array(segment_types, dtype=np.int32),
+        )
+
 # ===========================================================================
 # 1. ACTION TERM - Differential Drive
 # ===========================================================================
@@ -113,6 +212,9 @@ def goal_observation(env: ManagerBasedRLEnv, lookahead: int = 1) -> torch.Tensor
     dist = torch.norm(delta, dim=1, keepdim=True)
     goal_angle_world = torch.atan2(delta[:, 1], delta[:, 0])
     rel_angle = _wrap_angle(goal_angle_world - yaw)
+
+    # Update debug visualization of full waypoint path + current goal.
+    _draw_waypoints_debug(env)
     
     obs = torch.cat([dist, rel_angle.unsqueeze(1)], dim=1)
     return torch.nan_to_num(obs, nan=0.0, posinf=10.0, neginf=-10.0)
