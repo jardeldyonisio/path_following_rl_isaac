@@ -4,11 +4,28 @@ scene_cfg.py
 Define O QUE existe no mundo da simulação.
 """
 
+import os
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils import configclass
+
+ASSETS_DIR = "/home/lognav/Jardel/path_following_rl_isaac/assets"
+PHYSICS_USD = os.path.join(ASSETS_DIR, "turtlebot3_burger_fixed", "configuration", "turtlebot3_burger_fixed_physics.usd")
+READY_USD = os.path.join(ASSETS_DIR, "turtlebot3_burger_ready.usd")
+FIXED_USD = os.path.join(ASSETS_DIR, "turtlebot3_burger_fixed", "turtlebot3_burger_fixed.usd")
+
+# IMPORTANT:
+# `turtlebot3_burger_ready.usd` currently contains nested articulation roots
+# (/World and /World/turtlebot3_burger), which crashes IsaacLab when spawned.
+# The physics layer USD has a single articulation root and is safe for ArticulationCfg.
+if os.path.exists(PHYSICS_USD):
+    TURTLEBOT3_USD_PATH = PHYSICS_USD
+elif os.path.exists(READY_USD):
+    TURTLEBOT3_USD_PATH = READY_USD
+else:
+    TURTLEBOT3_USD_PATH = FIXED_USD
 
 # ---------------------------------------------------------------------------
 # Configuração do Robô (Asset)
@@ -16,21 +33,12 @@ from isaaclab.utils import configclass
 TURTLEBOT3_CFG = ArticulationCfg(
     prim_path="{ENV_REGEX_NS}/Robot",
     spawn=sim_utils.UsdFileCfg(
-        usd_path="/home/lognav/turtlebot3_ws/src/turtlebot3/turtlebot3_description/urdf/turtlebot3_burger/turtlebot3_burger.usd",
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
-            disable_gravity=False,
-            retain_accelerations=False,
-            linear_damping=0.0,
-            angular_damping=0.0,
-            max_linear_velocity=1.0,
-            max_angular_velocity=1.0,
-            max_depenetration_velocity=1.0,
-        ),
-        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=False,
-            solver_position_iteration_count=4,
-            solver_velocity_iteration_count=0,
-        ),
+        usd_path=TURTLEBOT3_USD_PATH,
+        # NOTE:
+        # The TurtleBot USD already carries articulation metadata.
+        # Applying articulation/rigid-root modifiers at this spawn level can
+        # create nested articulation roots (e.g. /Robot and /Robot/turtlebot3_burger).
+        # Keep spawn minimal and configure articulation internals in the USD itself.
     ),
     init_state=ArticulationCfg.InitialStateCfg(
         pos=(0.0, 0.0, 1.0),
@@ -39,10 +47,11 @@ TURTLEBOT3_CFG = ArticulationCfg(
     actuators={
         "wheels": ImplicitActuatorCfg(
             joint_names_expr=[".*wheel.*"],
-            effort_limit=1.0,
-            velocity_limit=10.0,
-            stiffness=0.0,
-            damping=1.0,
+            # --- THE FIX: Give the motors enough power to move! ---
+            effort_limit=400.0,   # Let the physics engine use enough torque to move the 1kg robot
+            velocity_limit=100.0, # The absolute safety limit for wheel spin
+            stiffness=0.0,        # 0.0 means we are strictly using Velocity Control, not Position
+            damping=10000.0,      # In PhysX, high damping is REQUIRED to lock in the target velocity
         ),
     },
 )

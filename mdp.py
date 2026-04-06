@@ -2,18 +2,40 @@
 mdp.py
 ------
 Contains the logic functions for the Managers.
-Upgraded to protect the Neural Network from Infinite (inf) physics shocks!
+Helpers moved to the top to prevent NameErrors!
 """
 
 from __future__ import annotations
 import math
 import torch
+import numpy as np
+import gymnasium as gym
 from typing import TYPE_CHECKING
 from isaaclab.managers import ActionTermCfg, ActionTerm
 from isaaclab.utils import configclass
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
+
+# ===========================================================================
+# 0. HELPERS (Moved to the top to guarantee they load first!)
+# ===========================================================================
+def _get_current_waypoint(env: ManagerBasedRLEnv):
+    if not hasattr(env, 'waypoint_idx'):
+        return torch.zeros(env.num_envs, 2, device=env.device)
+    idx = torch.clamp(env.waypoint_idx, 0, env.waypoints.shape[1] - 1)
+    return env.waypoints[torch.arange(env.num_envs, device=env.device), idx]
+
+def _advance_waypoint(env: ManagerBasedRLEnv, reached: torch.Tensor):
+    if hasattr(env, 'waypoint_idx'):
+        env.waypoint_idx[reached] += 1
+
+def _quat_to_yaw(quat: torch.Tensor):
+    w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+    return torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+def _wrap_angle(angle: torch.Tensor):
+    return (angle + math.pi) % (2 * math.pi) - math.pi
 
 # ===========================================================================
 # 1. ACTION TERM - Differential Drive
@@ -35,14 +57,26 @@ class DifferentialDriveAction(ActionTerm):
 
     @property
     def action_dim(self) -> int: return 2
+    
+    @property
+    def action_space(self) -> gym.Space:
+        return gym.spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
+
     @property
     def raw_actions(self) -> torch.Tensor: return self._raw_actions
+    
     @property
     def processed_actions(self) -> torch.Tensor: return self._processed_actions
 
     def process_actions(self, actions: torch.Tensor):
-        # Neural Network Safety Net
-        if not torch.isfinite(actions).all():
+        
+        # --- OPEN-LOOP TEST: HIJACK THE SIGNAL ---
+        # We ignore what the RL agent says and force it to drive forward at maximum speed!
+        # actions[:, 0] = 1.0  # 100% Forward Linear Velocity
+        # actions[:, 1] = 0.0  # 0% Angular Velocity (Don't turn)
+        
+        if not torch.isfinite(actions).all() or torch.isnan(actions).any():
+            print(f"🚨 [ZOMBIE BRAIN DETECTED] Action is corrupted! {actions[0]}")
             actions = torch.nan_to_num(actions, nan=0.0, posinf=1.0, neginf=-1.0)
             
         self._raw_actions = actions.clone()
@@ -81,7 +115,7 @@ def goal_observation(env: ManagerBasedRLEnv, lookahead: int = 1) -> torch.Tensor
     rel_angle = _wrap_angle(goal_angle_world - yaw)
     
     obs = torch.cat([dist, rel_angle.unsqueeze(1)], dim=1)
-    return torch.nan_to_num(obs, nan=0.0, posinf=10.0, neginf=-10.0) # Safety clamp
+    return torch.nan_to_num(obs, nan=0.0, posinf=10.0, neginf=-10.0)
 
 def velocity_observation(env: ManagerBasedRLEnv) -> torch.Tensor:
     robot = env.scene["robot"]
@@ -92,7 +126,7 @@ def velocity_observation(env: ManagerBasedRLEnv) -> torch.Tensor:
     ang_norm = torch.clamp(ang_vel / 2.84, -1.0, 1.0)
     
     obs = torch.stack([lin_norm, ang_norm], dim=1)
-    return torch.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0) # Safety clamp
+    return torch.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
 
 def progress_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     robot_pos = env.scene["robot"].data.root_pos_w[:, :2]
@@ -140,7 +174,6 @@ def reset_robot_pose(env: ManagerBasedRLEnv, env_ids: torch.Tensor):
     root_state = robot.data.default_root_state[env_ids].clone()
     
     root_state[:, 0:2] = start_pos
-    # --- Soft Landing: Spawn just 2cm above ground ---
     root_state[:, 2] = env.scene.env_origins[env_ids, 2] + 0.02 
     root_state[:, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=env.device)
     root_state[:, 7:13] = 0.0 
@@ -173,23 +206,3 @@ def reset_waypoints(env: ManagerBasedRLEnv, env_ids: torch.Tensor):
     
     env.waypoints[env_ids] = waypoints
     env.waypoint_idx[env_ids] = 1
-
-# ===========================================================================
-# HELPERS
-# ===========================================================================
-def _get_current_waypoint(env: ManagerBasedRLEnv):
-    if not hasattr(env, 'waypoint_idx'):
-        return torch.zeros(env.num_envs, 2, device=env.device)
-    idx = torch.clamp(env.waypoint_idx, 0, env.waypoints.shape[1] - 1)
-    return env.waypoints[torch.arange(env.num_envs, device=env.device), idx]
-
-def _advance_waypoint(env: ManagerBasedRLEnv, reached: torch.Tensor):
-    if hasattr(env, 'waypoint_idx'):
-        env.waypoint_idx[reached] += 1
-
-def _quat_to_yaw(quat: torch.Tensor):
-    w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
-    return torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
-
-def _wrap_angle(angle: torch.Tensor):
-    return (angle + math.pi) % (2 * math.pi) - math.pi
