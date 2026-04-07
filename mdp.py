@@ -54,6 +54,63 @@ def _wrap_angle(angle: torch.Tensor):
     '''
     return (angle + math.pi) % (2 * math.pi) - math.pi
 
+def _switch_path(num_paths: int, device: torch.device) -> torch.Tensor:
+    '''
+    @brief Sample a path type per environment, similar to the classic env's _switch_path behavior.
+
+    Path IDs:
+      0 -> straight
+      1 -> left_curve
+      2 -> right_curve
+      3 -> sine
+    '''
+    return torch.randint(low=0, high=4, size=(num_paths,), device=device)
+
+def _create_path(
+    start_x: float,
+    start_y: float,
+    path_type: int,
+    num_pts: int,
+    step_len: float = 1.0,
+) -> np.ndarray:
+    '''
+    @brief Create one 2D path (N x 2) similarly to the classic env's _create_path abstraction.
+    '''
+    pts = np.zeros((num_pts, 2), dtype=np.float32)
+    x = float(start_x)
+    y = float(start_y)
+
+    # Per-path local state.
+    heading = 0.0
+    base_y = y
+
+    for i in range(num_pts):
+        pts[i, 0] = x
+        pts[i, 1] = y
+
+        if path_type == 0:
+            print("[DEBUG] Generating straight path")
+            x += step_len
+        elif path_type == 1:
+            # left curve
+            print("[DEBUG] Generating left curve path")
+            heading += 0.12
+            x += math.cos(heading) * step_len
+            y += math.sin(heading) * step_len
+        elif path_type == 2:
+            # right curve
+            print("[DEBUG] Generating right curve path")
+            heading -= 0.12
+            x += math.cos(heading) * step_len
+            y += math.sin(heading) * step_len
+        else:
+            # sine-like path
+            print("[DEBUG] Generating sine-like path")
+            x += step_len
+            y = base_y + 1.5 * math.sin(0.35 * (i + 1))
+
+    return pts
+
 def _draw_waypoints_debug(env: "ManagerBasedRLEnv"):
     if not hasattr(env, "waypoints") or env.num_envs == 0:
         return
@@ -336,18 +393,29 @@ def reset_waypoints(env: ManagerBasedRLEnv, env_ids: torch.Tensor):
     '''
     num_reset, num_pts, device = len(env_ids), 15, env.device
     waypoints = torch.zeros(num_reset, num_pts, 2, device=device)
-    
+
+    # Keep classic-env goal window defaults available to rendering/logic.
+    if not hasattr(env, "goal_step"):
+        env.goal_step = 1
+    if not hasattr(env, "num_goals_window"):
+        env.num_goals_window = 15
+    if not hasattr(env, "out_of_bound_threshold"):
+        env.out_of_bound_threshold = (env.goal_step * env.num_goals_window) + env.goal_step
+
     env_origins = env.scene.env_origins[env_ids]
-    curr_x = env_origins[:, 0].clone()
-    curr_y = env_origins[:, 1].clone()
-    heading = torch.rand(num_reset, device=device) * 2 * math.pi
-    
-    for i in range(num_pts):
-        waypoints[:, i, 0] = curr_x
-        waypoints[:, i, 1] = curr_y
-        heading += (torch.rand(num_reset, device=device) * 0.4 - 0.2)
-        curr_x += torch.cos(heading) * 1.0
-        curr_y += torch.sin(heading) * 1.0
+    path_types = _switch_path(num_reset, device)
+
+    for k in range(num_reset):
+        start_x = float(env_origins[k, 0].item())
+        start_y = float(env_origins[k, 1].item())
+        path_np = _create_path(
+            start_x=start_x,
+            start_y=start_y,
+            path_type=int(path_types[k].item()),
+            num_pts=num_pts,
+            step_len=1.0,
+        )
+        waypoints[k] = torch.tensor(path_np, device=device)
         
     if not hasattr(env, 'waypoints'):
         env.waypoints = torch.zeros(env.num_envs, num_pts, 2, device=device)
