@@ -58,8 +58,13 @@ class EventsCfg:
     '''
     @brief Event configuration (resets).
     '''
-    reset_waypoints = EventTermCfg(
-        func=mdp.reset_waypoints,
+    reset_path_state = EventTermCfg(
+        func=mdp.reset_path_state,
+        mode="reset",
+    )
+
+    reset_obstacles = EventTermCfg(
+        func=mdp.reset_obstacles,
         mode="reset",
     )
     
@@ -85,7 +90,7 @@ class TurtlebotNavEnvCfg(ManagerBasedRLEnvCfg):
     events: EventsCfg = EventsCfg()
     
     # Episode settings
-    episode_length_s: float = 100.0
+    episode_length_s: float = 10.0
     decimation: int = 4
     
     def __post_init__(self):

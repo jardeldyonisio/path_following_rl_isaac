@@ -4,7 +4,7 @@
 import os
 import isaaclab.sim as sim_utils
 
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils import configclass
@@ -65,3 +65,69 @@ class NavSceneCfg(InteractiveSceneCfg):
     )
 
     robot: ArticulationCfg = TURTLEBOT3_CFG
+
+    # Obstacles (will be randomized on reset in mdp.reset_obstacles)
+    obstacle_0: RigidObjectCfg = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Obstacle_0",
+        spawn=sim_utils.CylinderCfg(
+            radius=0.25,
+            height=0.4,
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            mass_props=sim_utils.MassPropertiesCfg(mass=10.0),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.2, 0.2)),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(50.0, 50.0, 0.2)),
+    )
+
+    obstacle_1: RigidObjectCfg = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Obstacle_1",
+        spawn=sim_utils.CylinderCfg(
+            radius=0.22,
+            height=0.4,
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            mass_props=sim_utils.MassPropertiesCfg(mass=10.0),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.2, 0.2)),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(52.0, 50.0, 0.2)),
+    )
+
+    obstacle_2: RigidObjectCfg = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Obstacle_2",
+        spawn=sim_utils.CylinderCfg(
+            radius=0.20,
+            height=0.4,
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            mass_props=sim_utils.MassPropertiesCfg(mass=10.0),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.2, 0.2)),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(54.0, 50.0, 0.2)),
+    )
+
+    obstacle_3: RigidObjectCfg = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Obstacle_3",
+        spawn=sim_utils.CylinderCfg(
+            radius=0.18,
+            height=0.4,
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            mass_props=sim_utils.MassPropertiesCfg(mass=10.0),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.2, 0.2)),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(56.0, 50.0, 0.2)),
+    )
+
+    obstacle_4: RigidObjectCfg = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Obstacle_4",
+        spawn=sim_utils.CylinderCfg(
+            radius=0.16,
+            height=0.4,
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            mass_props=sim_utils.MassPropertiesCfg(mass=10.0),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.2, 0.2)),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(58.0, 50.0, 0.2)),
+    )

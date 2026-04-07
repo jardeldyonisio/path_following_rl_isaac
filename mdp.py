@@ -66,13 +66,11 @@ def _switch_path(num_paths: int, device: torch.device) -> torch.Tensor:
     '''
     return torch.randint(low=0, high=4, size=(num_paths,), device=device)
 
-def _create_path(
-    start_x: float,
-    start_y: float,
-    path_type: int,
-    num_pts: int,
-    step_len: float = 1.0,
-) -> np.ndarray:
+def _create_path(start_x: float,
+                 start_y: float,
+                 path_type: int,
+                 num_pts: int,
+                 step_len: float = 1.0,) -> np.ndarray:
     '''
     @brief Create one 2D path (N x 2) similarly to the classic env's _create_path abstraction.
     '''
@@ -89,29 +87,28 @@ def _create_path(
         pts[i, 1] = y
 
         if path_type == 0:
-            print("[DEBUG] Generating straight path")
             x += step_len
         elif path_type == 1:
             # left curve
-            print("[DEBUG] Generating left curve path")
             heading += 0.12
             x += math.cos(heading) * step_len
             y += math.sin(heading) * step_len
         elif path_type == 2:
             # right curve
-            print("[DEBUG] Generating right curve path")
             heading -= 0.12
             x += math.cos(heading) * step_len
             y += math.sin(heading) * step_len
         else:
             # sine-like path
-            print("[DEBUG] Generating sine-like path")
             x += step_len
             y = base_y + 1.5 * math.sin(0.35 * (i + 1))
 
     return pts
 
-def _draw_waypoints_debug(env: "ManagerBasedRLEnv"):
+def _visual_markers(env: "ManagerBasedRLEnv"):
+    '''
+    @brief Visualize the goals and path.
+    '''
     if not hasattr(env, "waypoints") or env.num_envs == 0:
         return
 
@@ -286,7 +283,7 @@ def goal_observation(env: ManagerBasedRLEnv, lookahead: int = 1) -> torch.Tensor
     rel_angle = _wrap_angle(goal_angle_world - yaw)
 
     # Update debug visualization of full waypoint path + current goal.
-    _draw_waypoints_debug(env)
+    _visual_markers(env)
     
     obs = torch.cat([dist, rel_angle.unsqueeze(1)], dim=1)
     return torch.nan_to_num(obs, nan=0.0, posinf=10.0, neginf=-10.0)
@@ -387,11 +384,12 @@ def reset_robot_pose(env: ManagerBasedRLEnv, env_ids: torch.Tensor):
     joint_vel = torch.zeros_like(robot.data.default_joint_vel[env_ids])
     robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
-def reset_waypoints(env: ManagerBasedRLEnv, env_ids: torch.Tensor):
+def reset_path_state(env: ManagerBasedRLEnv, env_ids: torch.Tensor):
     '''
-    @brief Reset the waypoints for the given environment IDs by generating a new random path starting from the environment's origin.
+    @brief Reset path-related state for the given env IDs:
+    regenerate waypoints and reset current path index.
     '''
-    num_reset, num_pts, device = len(env_ids), 15, env.device
+    num_reset, num_pts, device = len(env_ids), 50, env.device
     waypoints = torch.zeros(num_reset, num_pts, 2, device=device)
 
     # Keep classic-env goal window defaults available to rendering/logic.
@@ -423,3 +421,106 @@ def reset_waypoints(env: ManagerBasedRLEnv, env_ids: torch.Tensor):
     
     env.waypoints[env_ids] = waypoints
     env.waypoint_idx[env_ids] = 1
+
+def reset_obstacles(env: ManagerBasedRLEnv, env_ids: torch.Tensor):
+    '''
+    @brief Reset obstacles for the given env IDs, similar in spirit to path_multiple_obstacles_lidar.py.
+
+    - Randomly enables 0..N obstacles per env.
+    - Places active obstacles near path points with lateral offsets.
+    - Moves inactive obstacles far away.
+    '''
+    obstacle_names = [f"obstacle_{i}" for i in range(5)]
+    obstacle_radii = [0.25, 0.22, 0.20, 0.18, 0.16]
+
+    # Resolve obstacle assets once.
+    obstacles = []
+    for name in obstacle_names:
+        try:
+            obstacles.append(env.scene[name])
+        except Exception:
+            return
+
+    # Ensure path-related state exists.
+    if not hasattr(env, "waypoints"):
+        return
+
+    device = env.device
+
+    for env_id in env_ids.tolist():
+        wp = env.waypoints[env_id]
+        if wp.shape[0] < 3:
+            continue
+
+        # Random number of obstacles [0, 5]
+        num_obs = int(torch.randint(low=0, high=len(obstacles) + 1, size=(1,), device=device).item())
+
+        # Sample candidate indices away from very start/end.
+        idx_low = 2
+        idx_high = max(idx_low + 1, int(wp.shape[0]) - 2)
+
+        if idx_high <= idx_low:
+            chosen_indices = []
+        else:
+            num_choices = min(num_obs, idx_high - idx_low)
+            perm = torch.randperm(idx_high - idx_low, device=device)[:num_choices] + idx_low
+            chosen_indices = perm.tolist()
+
+        for i, obstacle in enumerate(obstacles):
+            if i < len(chosen_indices):
+                p_idx = int(chosen_indices[i])
+                p = wp[p_idx]
+
+                # Compute local tangent using neighboring points.
+                p_prev = wp[max(0, p_idx - 1)]
+                p_next = wp[min(int(wp.shape[0]) - 1, p_idx + 1)]
+                tangent = p_next - p_prev
+                tangent_norm = torch.norm(tangent) + 1e-6
+                tangent = tangent / tangent_norm
+
+                # Perpendicular direction and random offset under 1m.
+                perp = torch.tensor([-tangent[1], tangent[0]], device=device)
+                offset = torch.empty(1, device=device).uniform_(-1.0, 1.0)[0]
+                pos_xy = p + perp * offset
+
+                # Keep safe distance from start pose.
+                start_xy = wp[0]
+                if torch.norm(pos_xy - start_xy) < 1.0:
+                    pos_xy = pos_xy + perp * 1.0
+
+                pose = torch.tensor(
+                    [[float(pos_xy[0]), float(pos_xy[1]), 0.2, 1.0, 0.0, 0.0, 0.0]],
+                    device=device,
+                    dtype=torch.float32,
+                )
+
+                try:
+                    obstacle.write_root_pose_to_sim(pose, env_ids=torch.tensor([env_id], device=device, dtype=torch.long))
+                except Exception:
+                    # Fallback path for API variants that only expose root state writes.
+                    root_state = obstacle.data.default_root_state[torch.tensor([env_id], device=device, dtype=torch.long)].clone()
+                    root_state[:, 0] = pose[:, 0]
+                    root_state[:, 1] = pose[:, 1]
+                    root_state[:, 2] = pose[:, 2]
+                    root_state[:, 3:7] = pose[:, 3:7]
+                    root_state[:, 7:13] = 0.0
+                    obstacle.write_root_state_to_sim(root_state, env_ids=torch.tensor([env_id], device=device, dtype=torch.long))
+            else:
+                # Disable unused obstacles by moving them far away.
+                far_x = float(env.scene.env_origins[env_id, 0].item() + 50.0 + i * 2.0)
+                far_y = float(env.scene.env_origins[env_id, 1].item() + 50.0)
+                pose = torch.tensor(
+                    [[far_x, far_y, 0.2, 1.0, 0.0, 0.0, 0.0]],
+                    device=device,
+                    dtype=torch.float32,
+                )
+                try:
+                    obstacle.write_root_pose_to_sim(pose, env_ids=torch.tensor([env_id], device=device, dtype=torch.long))
+                except Exception:
+                    root_state = obstacle.data.default_root_state[torch.tensor([env_id], device=device, dtype=torch.long)].clone()
+                    root_state[:, 0] = pose[:, 0]
+                    root_state[:, 1] = pose[:, 1]
+                    root_state[:, 2] = pose[:, 2]
+                    root_state[:, 3:7] = pose[:, 3:7]
+                    root_state[:, 7:13] = 0.0
+                    obstacle.write_root_state_to_sim(root_state, env_ids=torch.tensor([env_id], device=device, dtype=torch.long))
