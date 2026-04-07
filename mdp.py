@@ -41,38 +41,23 @@ def _draw_waypoints_debug(env: "ManagerBasedRLEnv"):
     if not hasattr(env, "waypoints") or env.num_envs == 0:
         return
 
-    # Lazy init of VisualizationMarkers
-    if not hasattr(env, "_waypoint_markers"):
+    # Lazy init of debug draw interface (fallback-friendly across Isaac versions)
+    if not hasattr(env, "_debug_draw"):
+        env._debug_draw = None
         try:
-            from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
-            import isaaclab.sim as sim_utils
-            import os
-            # Configure a sphere marker for waypoints and a cylinder for path segments
-            marker_cfg = VisualizationMarkersCfg(
-                prim_path="/Visuals/Waypoints",
-                markers={
-                    "waypoint": sim_utils.SphereCfg(
-                        radius=0.08,
-                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.6, 1.0)),
-                    ),
-                    "active": sim_utils.SphereCfg(
-                        radius=0.12,
-                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.2, 0.2)),
-                    ),
-                    "segment": sim_utils.CylinderCfg(
-                        radius=0.025,
-                        height=1.0,  # Will be scaled per segment
-                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 1.0, 0.2)),
-                    ),
-                },
-            )
-            env._waypoint_markers = VisualizationMarkers(cfg=marker_cfg)
-        except Exception as e:
-            env._waypoint_markers = None
-            print(f"[DEBUG] Could not initialize VisualizationMarkers: {e}")
+            from omni.isaac.debug_draw import _debug_draw
 
-    markers = env._waypoint_markers
-    if markers is None:
+            env._debug_draw = _debug_draw.acquire_debug_draw_interface()
+        except Exception:
+            try:
+                from isaacsim.util.debug_draw import _debug_draw
+
+                env._debug_draw = _debug_draw.acquire_debug_draw_interface()
+            except Exception as e:
+                print(f"[DEBUG] Could not initialize debug draw interface: {e}")
+
+    debug_draw = env._debug_draw
+    if debug_draw is None:
         return
 
     # Draw only env_0 for clarity.
@@ -84,57 +69,70 @@ def _draw_waypoints_debug(env: "ManagerBasedRLEnv"):
     active_idx = int(env.waypoint_idx[env_id].item()) if hasattr(env, "waypoint_idx") else 0
     active_idx = max(0, min(active_idx, wp.shape[0] - 1))
 
-    # Visualize waypoints as spheres, highlight the active one
-    waypoint_poses = []
-    waypoint_types = []
-    for i, p in enumerate(wp):
-        pos = (float(p[0]), float(p[1]), 0.05)
-        waypoint_poses.append(pos)
-        waypoint_types.append(1 if i == active_idx else 0)  # 1: active, 0: waypoint
+    # Reproduce matplotlib logic:
+    # - Main goal: current waypoint index (green)
+    # - Secondary goals: next goals in window (pink)
+    # - Path: continuous line over all waypoints
+    goal_step = int(getattr(env, "goal_step", 1))
+    if goal_step <= 0:
+        goal_step = 1
+    window_size = int(getattr(env, "num_goals_window", min(15, int(wp.shape[0]))))
+    if window_size <= 0:
+        window_size = min(15, int(wp.shape[0]))
 
-    # Visualize path segments as cylinders between waypoints
-    segment_poses = []
-    segment_orientations = []
-    segment_types = []
-    for i in range(len(wp) - 1):
-        p0 = np.array([float(wp[i][0]), float(wp[i][1]), 0.05])
-        p1 = np.array([float(wp[i+1][0]), float(wp[i+1][1]), 0.05])
-        center = (p0 + p1) / 2
-        vec = p1 - p0
-        height = np.linalg.norm(vec)
-        if height < 1e-4:
-            continue
-        # Orientation: align cylinder with segment
-        yaw = math.atan2(vec[1], vec[0])
-        import torch
+    secondary_start = active_idx + 1
+    secondary_end = min(int(wp.shape[0]), active_idx + goal_step * window_size)
+    secondary_indices = list(range(secondary_start, secondary_end, goal_step))
+
+    z = 0.08
+
+    # Clear previous draw from this frame.
+    try:
+        debug_draw.clear_lines()
+        debug_draw.clear_points()
+    except Exception:
+        pass
+
+    # Draw full path as continuous line.
+    if wp.shape[0] > 1:
+        p0 = []
+        p1 = []
+        colors = []
+        widths = []
+        for i in range(int(wp.shape[0]) - 1):
+            a = wp[i]
+            b = wp[i + 1]
+            p0.append((float(a[0]), float(a[1]), z))
+            p1.append((float(b[0]), float(b[1]), z))
+            colors.append((0.1, 0.8, 1.0, 1.0))
+            widths.append(2.5)
         try:
-            # Try IsaacLab's new location for quat_from_angle_axis
-            from isaaclab.sim.math import quat_from_angle_axis
-        except ImportError:
-            # Fallback: implement minimal version
-            def quat_from_angle_axis(angle, axis):
-                half = angle / 2
-                w = torch.cos(half)
-                xyz = torch.sin(half).unsqueeze(-1) * axis
-                return torch.cat([w.unsqueeze(-1), xyz], dim=-1)
-        quat = quat_from_angle_axis(torch.tensor([yaw]), torch.tensor([0.0, 0.0, 1.0]))[0].numpy()
-        segment_poses.append(tuple(center))
-        segment_orientations.append(tuple(quat))
-        segment_types.append(2)  # 2: segment
+            debug_draw.draw_lines(p0, p1, colors, widths)
+        except Exception as e:
+            print(f"[DEBUG] draw_lines failed: {e}")
 
-    # Draw waypoints
-    markers.visualize(
-        torch.tensor(waypoint_poses),
-        torch.tensor([[1.0, 0.0, 0.0, 0.0]] * len(waypoint_poses)),
-        marker_indices=np.array(waypoint_types, dtype=np.int32),
-    )
-    # Draw path segments
-    if segment_poses:
-        markers.visualize(
-            torch.tensor(segment_poses),
-            torch.tensor(segment_orientations),
-            marker_indices=np.array(segment_types, dtype=np.int32),
-        )
+    # Draw main and secondary goals.
+    points = []
+    point_colors = []
+    point_sizes = []
+
+    main_goal = wp[active_idx]
+    points.append((float(main_goal[0]), float(main_goal[1]), z + 0.02))
+    point_colors.append((0.0, 1.0, 0.0, 1.0))  # green
+    point_sizes.append(24.0)
+
+    for idx in secondary_indices:
+        if 0 <= idx < int(wp.shape[0]):
+            p = wp[idx]
+            points.append((float(p[0]), float(p[1]), z + 0.01))
+            point_colors.append((1.0, 0.0, 1.0, 1.0))  # pink/magenta
+            point_sizes.append(16.0)
+
+    if points:
+        try:
+            debug_draw.draw_points(points, point_colors, point_sizes)
+        except Exception as e:
+            print(f"[DEBUG] draw_points failed: {e}")
 
 # ===========================================================================
 # 1. ACTION TERM - Differential Drive
