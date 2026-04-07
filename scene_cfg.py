@@ -1,11 +1,9 @@
-"""
-scene_cfg.py
-------------
-Define O QUE existe no mundo da simulação.
-"""
-
+'''
+@brief Defines what exists in the scene, including the robot, the ground plane, and the light source.
+'''
 import os
 import isaaclab.sim as sim_utils
+
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.scene import InteractiveSceneCfg
@@ -16,7 +14,6 @@ PHYSICS_USD = os.path.join(ASSETS_DIR, "turtlebot3_burger_fixed", "configuration
 READY_USD = os.path.join(ASSETS_DIR, "turtlebot3_burger_ready.usd")
 FIXED_USD = os.path.join(ASSETS_DIR, "turtlebot3_burger_fixed", "turtlebot3_burger_fixed.usd")
 
-# IMPORTANT:
 # `turtlebot3_burger_ready.usd` currently contains nested articulation roots
 # (/World and /World/turtlebot3_burger), which crashes IsaacLab when spawned.
 # The physics layer USD has a single articulation root and is safe for ArticulationCfg.
@@ -27,9 +24,6 @@ elif os.path.exists(READY_USD):
 else:
     TURTLEBOT3_USD_PATH = FIXED_USD
 
-# ---------------------------------------------------------------------------
-# Configuração do Robô (Asset)
-# ---------------------------------------------------------------------------
 TURTLEBOT3_CFG = ArticulationCfg(
     prim_path="{ENV_REGEX_NS}/Robot",
     spawn=sim_utils.UsdFileCfg(
@@ -47,7 +41,6 @@ TURTLEBOT3_CFG = ArticulationCfg(
     actuators={
         "wheels": ImplicitActuatorCfg(
             joint_names_expr=[".*wheel.*"],
-            # --- THE FIX: Give the motors enough power to move! ---
             effort_limit=400.0,   # Let the physics engine use enough torque to move the 1kg robot
             velocity_limit=100.0, # The absolute safety limit for wheel spin
             stiffness=0.0,        # 0.0 means we are strictly using Velocity Control, not Position
@@ -56,9 +49,6 @@ TURTLEBOT3_CFG = ArticulationCfg(
     },
 )
 
-# ---------------------------------------------------------------------------
-# Configuração da Cena
-# ---------------------------------------------------------------------------
 @configclass
 class NavSceneCfg(InteractiveSceneCfg):
     ground = AssetBaseCfg(

@@ -1,11 +1,9 @@
-"""
-env_cfg.py
-----------
-Environment configuration for TurtleBot3 Navigation.
-Defines managers for actions, observations, rewards, terminations, and events.
-"""
+'''
+@brief Defined managers for actions, observations, rewards, terminations, and events for a robot navigation task.
+'''
 
-from isaaclab.envs import ManagerBasedRLEnvCfg
+import mdp
+
 from isaaclab.managers import (
     ObservationGroupCfg,
     ObservationTermCfg,
@@ -13,24 +11,22 @@ from isaaclab.managers import (
     TerminationTermCfg,
     EventTermCfg,
 )
-from isaaclab.utils import configclass
-
-# Import the scene and custom MDP functions
 from scene_cfg import NavSceneCfg
-import mdp
-
-# ===========================================================================
-# Managers Configuration
-# ===========================================================================
+from isaaclab.utils import configclass
+from isaaclab.envs import ManagerBasedRLEnvCfg
 
 @configclass
 class ActionsCfg:
-    """Action configuration."""
+    '''
+    @brief Action configuration for the robot navigation task.
+    '''
     robot_vel = mdp.DifferentialDriveActionCfg()
 
 @configclass
 class ObservationsCfg:
-    """Observation configuration."""
+    '''
+    @brief Observation configuration for the robot navigation task.
+    '''
     @configclass
     class PolicyCfg(ObservationGroupCfg):
         goal_obs = ObservationTermCfg(func=mdp.goal_observation, params={"lookahead": 1})
@@ -40,7 +36,9 @@ class ObservationsCfg:
 
 @configclass
 class RewardsCfg:
-    """Reward configuration."""
+    '''
+    @brief Reward configuration for the robot navigation task.
+    '''
     progress_reward = RewardTermCfg(func=mdp.progress_reward, weight=5.0)
     waypoint_reached = RewardTermCfg(func=mdp.waypoint_reached_reward, weight=10.0)
     out_of_bounds_penalty = RewardTermCfg(func=mdp.out_of_bounds_penalty, weight=-1.0)
@@ -48,36 +46,36 @@ class RewardsCfg:
 
 @configclass
 class TerminationsCfg:
-    """Termination configuration."""
+    '''
+    @brief Termination configuration for the robot navigation task.
+    '''
     out_of_bounds = TerminationTermCfg(func=mdp.out_of_bounds_termination)
     all_waypoints_reached = TerminationTermCfg(func=mdp.all_waypoints_reached_termination)
     time_out = TerminationTermCfg(func=mdp.time_out, time_out=True)
 
 @configclass
 class EventsCfg:
-    """Event configuration (resets)."""
-    # 1. Reset the waypoints when an episode ends
+    '''
+    @brief Event configuration (resets).
+    '''
     reset_waypoints = EventTermCfg(
         func=mdp.reset_waypoints,
         mode="reset",
     )
     
-    # 2. Reset the robot's position and rotation (This was the missing piece!)
     reset_robot_pose = EventTermCfg(
         func=mdp.reset_robot_pose,
         mode="reset",
     )
 
-# ===========================================================================
-# Environment Configuration
-# ===========================================================================
-
 @configclass
 class TurtlebotNavEnvCfg(ManagerBasedRLEnvCfg):
-    """Main environment configuration."""
+    '''
+    @brief Environment configuration for a robot navigation task.
+    '''
     
-    # Scene settings (We default to 16, but your train.py overrides this if you pass --num_envs 1)
-    scene: NavSceneCfg = NavSceneCfg(num_envs=16, env_spacing=4.0)
+    # Scene settings 
+    scene: NavSceneCfg = NavSceneCfg(num_envs=1, env_spacing=4.0)
     
     # Register the managers
     observations: ObservationsCfg = ObservationsCfg()
@@ -87,7 +85,7 @@ class TurtlebotNavEnvCfg(ManagerBasedRLEnvCfg):
     events: EventsCfg = EventsCfg()
     
     # Episode settings
-    episode_length_s: float = 20.0
+    episode_length_s: float = 100.0
     decimation: int = 4
     
     def __post_init__(self):

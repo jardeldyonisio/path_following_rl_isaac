@@ -1,3 +1,10 @@
+'''
+@brief Defines the action processing, observation computation, reward calculation, termination conditions, and reset events 
+for a differential drive robot navigation task in IsaacLab. The robot is expected to follow a series of waypoints, and the 
+code includes utilities for handling waypoints, computing relative angles, and visualizing the waypoints in the simulation 
+for debugging purposes.
+'''
+
 from __future__ import annotations
 
 import math
