@@ -8,8 +8,10 @@ import shutil
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="Train TurtleBot3 navigation with TD3")
-parser.add_argument("--num_envs", type=int, default=16, help="Number of parallel environments.")
-parser.add_argument("--max_iterations", type=int, default=5000, help="Number of iterations.")
+parser.add_argument("--num_envs", type=int, default=1, help="Number of parallel environments.")
+parser.add_argument("--max_episodes", type=int, default=100000, help="Number of training episodes (simple env default).")
+parser.add_argument("--max_steps", type=int, default=1000, help="Max steps per episode (simple env default).")
+parser.add_argument("--seed_steps", type=int, default=2000, help="Number of warmup (random) steps before learning starts.")
 parser.add_argument("--seed", type=int, default=42, help="Seed.")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -21,12 +23,12 @@ from isaaclab_rl.skrl import SkrlVecEnvWrapper
 from skrl.agents.torch.td3 import TD3, TD3_DEFAULT_CONFIG
 from skrl.memories.torch import RandomMemory
 from skrl.models.torch import DeterministicMixin, Model
-from skrl.resources.noises.torch import GaussianNoise
 from skrl.trainers.torch import SequentialTrainer
 from skrl.utils import set_seed
 
 sys.path.insert(0, os.path.dirname(__file__))
 from env_cfg import TurtlebotNavEnvCfg
+from noise import DrQv2Noise, FixedGaussianNoise
 
 set_seed(args.seed)
 
@@ -115,8 +117,15 @@ td3_cfg["random_timesteps"] = 0
 td3_cfg["actor_learning_rate"] = 1e-4
 td3_cfg["critic_learning_rate"] = 1e-4
 td3_cfg["grad_norm_clip"] = 0.5
-td3_cfg["exploration"]["noise"] = GaussianNoise(mean=0.0, std=0.1, device=device)
-td3_cfg["smooth_regularization_noise"] = GaussianNoise(mean=0.0, std=0.2, device=device)
+total_timesteps = max(1, int(args.max_episodes * args.max_steps))
+td3_cfg["exploration"]["noise"] = DrQv2Noise(
+    action_dim=env.action_space.shape[0],
+    device=device,
+    initial_std=0.3,
+    final_std=0.05,
+    decay_steps=max(1, int(total_timesteps * 0.8)),
+)
+td3_cfg["smooth_regularization_noise"] = FixedGaussianNoise(mean=0.0, std=0.2, device=device)
 td3_cfg["smooth_regularization_clip"] = 0.5
 
 td3_cfg["experiment"]["directory"] = "runs/turtlebot_nav"
@@ -126,7 +135,7 @@ agent = TD3(models=models, memory=RandomMemory(1000000, env.num_envs, device),
             cfg=td3_cfg, observation_space=env.observation_space, 
             action_space=env.action_space, device=device)
 
-trainer = SequentialTrainer(cfg={"timesteps": args.max_iterations * args.num_envs}, env=env, agents=agent)
+trainer = SequentialTrainer(cfg={"timesteps": total_timesteps}, env=env, agents=agent)
 
 trainer.train()
 simulation_app.close()
