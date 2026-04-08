@@ -105,6 +105,76 @@ def _create_path(start_x: float,
 
     return pts
 
+def _analytic_lidar_for_env(
+    env: "ManagerBasedRLEnv",
+    env_id: int,
+    num_rays: int,
+    fov_deg: float,
+    max_distance: float,
+):
+    '''
+    @brief Analytic LiDAR fallback using ray-circle intersection against obstacle objects.
+    '''
+    # Anchor fallback rays to LiDAR frame (base_scan) to match mounted sensor location.
+    lidar = env.scene["lidar"]
+    sensor_pos = lidar.data.pos_w[env_id]
+    sensor_xy = sensor_pos[:2]
+    sensor_z = float(sensor_pos[2].item())
+    yaw = float(_quat_to_yaw(lidar.data.quat_w[env_id:env_id + 1])[0].item())
+
+    if num_rays <= 1:
+        rel_angles = np.array([0.0], dtype=np.float32)
+    else:
+        rel_angles = np.linspace(-0.5 * np.deg2rad(fov_deg), 0.5 * np.deg2rad(fov_deg), num_rays, dtype=np.float32)
+
+    obstacle_names = [f"obstacle_{i}" for i in range(5)]
+    obstacle_radii = getattr(env, "obstacle_radii", [0.25, 0.22, 0.20, 0.18, 0.16])
+
+    centers = []
+    radii = []
+    for i, name in enumerate(obstacle_names):
+        try:
+            pos_xy = env.scene[name].data.root_pos_w[env_id, :2]
+            centers.append(pos_xy)
+            radii.append(float(obstacle_radii[i]))
+        except Exception:
+            continue
+
+    starts = []
+    hits = []
+    dists = []
+    origin_np = sensor_xy.detach().cpu().numpy()
+
+    for rel in rel_angles:
+        ang = yaw + float(rel)
+        direction = np.array([math.cos(ang), math.sin(ang)], dtype=np.float32)
+
+        best_t = float(max_distance)
+        for c_xy_t, r in zip(centers, radii):
+            c = c_xy_t.detach().cpu().numpy().astype(np.float32)
+            d = origin_np - c
+            a = 1.0
+            b = 2.0 * float(np.dot(d, direction))
+            ccoef = float(np.dot(d, d) - r * r)
+            disc = b * b - 4.0 * a * ccoef
+            if disc < 0.0:
+                continue
+            sqrt_disc = math.sqrt(disc)
+            t1 = (-b - sqrt_disc) / (2.0 * a)
+            t2 = (-b + sqrt_disc) / (2.0 * a)
+            candidates = [t for t in (t1, t2) if t >= 0.0]
+            if candidates:
+                t = min(candidates)
+                if t < best_t:
+                    best_t = t
+
+        hit_xy = origin_np + direction * best_t
+        starts.append((float(origin_np[0]), float(origin_np[1]), sensor_z))
+        hits.append((float(hit_xy[0]), float(hit_xy[1]), sensor_z))
+        dists.append(float(best_t))
+
+    return starts, hits, torch.tensor(dists, device=env.device, dtype=torch.float32)
+
 def _visual_markers(env: "ManagerBasedRLEnv"):
     '''
     @brief Visualize the goals and path.
@@ -204,6 +274,93 @@ def _visual_markers(env: "ManagerBasedRLEnv"):
             debug_draw.draw_points(points, point_colors, point_sizes)
         except Exception as e:
             print(f"[DEBUG] draw_points failed: {e}")
+
+    # Draw LiDAR rays (env_0) if sensor is available and visualization enabled.
+    if bool(getattr(env, "lidar_debug_vis", True)):
+        try:
+            lidar = env.scene["lidar"]
+            ray_hits = lidar.data.ray_hits_w[env_id]
+
+            # IsaacLab version compatibility: RayCasterData exposes sensor position (pos_w)
+            # and hit points (ray_hits_w), but not ray_starts_w in this release.
+            sensor_pos = lidar.data.pos_w[env_id]
+            ray_starts = sensor_pos.unsqueeze(0).repeat(ray_hits.shape[0], 1)
+
+            finite_mask = torch.isfinite(ray_hits).all(dim=-1)
+            if finite_mask.any():
+                lidar_p0 = [tuple(v.tolist()) for v in ray_starts[finite_mask]]
+                lidar_p1 = [tuple(v.tolist()) for v in ray_hits[finite_mask]]
+                lidar_colors = [(1.0, 1.0, 0.0, 0.65)] * len(lidar_p0)  # yellow
+                lidar_widths = [1.0] * len(lidar_p0)
+                debug_draw.draw_lines(lidar_p0, lidar_p1, lidar_colors, lidar_widths)
+            else:
+                # Fallback: draw analytic LiDAR rays based on obstacle circles.
+                num_rays = int(getattr(env, "lidar_num_rays", 24))
+                fov_deg = float(getattr(env, "lidar_fov_deg", 180.0))
+                max_dist = float(getattr(env, "lidar_max_distance", 2.5))
+                lidar_p0, lidar_p1, _ = _analytic_lidar_for_env(env, env_id, num_rays, fov_deg, max_dist)
+                lidar_colors = [(1.0, 0.8, 0.0, 0.65)] * len(lidar_p0)  # orange/yellow fallback
+                lidar_widths = [1.0] * len(lidar_p0)
+                debug_draw.draw_lines(lidar_p0, lidar_p1, lidar_colors, lidar_widths)
+
+        except Exception:
+            # Keep silent to avoid flooding if sensor isn't initialized in early steps.
+            pass
+
+def lidar_observation(env: ManagerBasedRLEnv) -> torch.Tensor:
+    '''
+    @brief Compute LiDAR observation as normalized ray distances in [0, 1].
+    '''
+    try:
+        lidar = env.scene["lidar"]
+    except Exception:
+        # Fallback shape: [num_envs, 1] if sensor is unavailable.
+        return torch.zeros((env.num_envs, 1), device=env.device)
+
+    ray_hits = lidar.data.ray_hits_w
+
+    # Determine expected LiDAR dimension from config for robust init-time fallback.
+    pattern_cfg = lidar.cfg.pattern_cfg
+    fov_min, fov_max = float(pattern_cfg.horizontal_fov_range[0]), float(pattern_cfg.horizontal_fov_range[1])
+    horiz_res = max(1e-6, float(pattern_cfg.horizontal_res))
+    channels = max(1, int(getattr(pattern_cfg, "channels", 1)))
+    rays_per_channel = max(1, int(round((fov_max - fov_min) / horiz_res)) + 1)
+    expected_dim = channels * rays_per_channel
+
+    if ray_hits is None:
+        # Analytic fallback for this sensor API/runtime state.
+        num_rays = int(getattr(env, "lidar_num_rays", expected_dim))
+        fov_deg = float(getattr(env, "lidar_fov_deg", 180.0))
+        max_dist = float(getattr(env, "lidar_max_distance", 2.5))
+        fallback = torch.zeros((env.num_envs, num_rays), device=env.device)
+        for e in range(env.num_envs):
+            _, _, d = _analytic_lidar_for_env(env, e, num_rays, fov_deg, max_dist)
+            fallback[e] = torch.clamp(1.0 - (d / max_dist), 0.0, 1.0)
+        return fallback
+
+    sensor_pos = lidar.data.pos_w.unsqueeze(1).expand(-1, ray_hits.shape[1], -1)
+    dists = torch.norm(ray_hits - sensor_pos, dim=-1)
+
+    max_dist = float(getattr(lidar.cfg, "max_distance", 2.5))
+    dists = torch.nan_to_num(dists, nan=max_dist, posinf=max_dist, neginf=0.0)
+    dists = torch.clamp(dists, 0.0, max_dist)
+
+    # Match classic env convention: 0.0 -> far, 1.0 -> near obstacle.
+    norm = 1.0 - (dists / max_dist)
+    norm = torch.clamp(norm, 0.0, 1.0)
+
+    # If no finite hits from ray caster, use analytic obstacle fallback.
+    finite_hits_any = torch.isfinite(ray_hits).all(dim=-1).any(dim=1)
+    if (~finite_hits_any).any():
+        num_rays = int(getattr(env, "lidar_num_rays", norm.shape[1]))
+        fov_deg = float(getattr(env, "lidar_fov_deg", 180.0))
+        fallback_max_dist = float(getattr(env, "lidar_max_distance", max_dist))
+        for e in range(env.num_envs):
+            if not bool(finite_hits_any[e].item()):
+                _, _, d = _analytic_lidar_for_env(env, e, num_rays, fov_deg, fallback_max_dist)
+                norm[e, :num_rays] = torch.clamp(1.0 - (d / fallback_max_dist), 0.0, 1.0)
+
+    return norm
 
 class DifferentialDriveAction(ActionTerm):
     cfg: DifferentialDriveActionCfg

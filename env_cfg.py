@@ -31,6 +31,7 @@ class ObservationsCfg:
     class PolicyCfg(ObservationGroupCfg):
         goal_obs = ObservationTermCfg(func=mdp.goal_observation, params={"lookahead": 1})
         velocity_obs = ObservationTermCfg(func=mdp.velocity_observation)
+        lidar_obs = ObservationTermCfg(func=mdp.lidar_observation)
 
     policy: PolicyCfg = PolicyCfg()
 
@@ -92,9 +93,27 @@ class TurtlebotNavEnvCfg(ManagerBasedRLEnvCfg):
     # Episode settings
     episode_length_s: float = 10.0
     decimation: int = 4
+
+    # LiDAR settings (easy to tune)
+    lidar_num_rays: int = 24
+    lidar_fov_deg: float = 180.0
+    lidar_max_distance: float = 2.5
+    lidar_debug_vis: bool = True
     
     def __post_init__(self):
         super().__post_init__()
+
+        # Apply LiDAR settings to scene sensor config
+        half_fov = 0.5 * float(self.lidar_fov_deg)
+        # For N rays across FOV, step is ~FOV/(N-1) (min 1 ray safeguard)
+        ray_count = max(1, int(self.lidar_num_rays))
+        horiz_res = float(self.lidar_fov_deg) / max(1, ray_count - 1)
+        self.scene.lidar.pattern_cfg.horizontal_fov_range = (-half_fov, half_fov)
+        self.scene.lidar.pattern_cfg.horizontal_res = horiz_res
+        self.scene.lidar.max_distance = float(self.lidar_max_distance)
+        # Keep IsaacLab internal RayCaster debug visualization disabled.
+        # We render LiDAR safely through mdp._visual_markers (lidar_debug_vis).
+        self.scene.lidar.debug_vis = False
         
         # Viewer camera settings
         self.viewer.eye = [5.0, 5.0, 5.0]

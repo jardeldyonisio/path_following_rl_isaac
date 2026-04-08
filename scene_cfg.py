@@ -7,6 +7,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.sensors import RayCasterCfg, patterns
 from isaaclab.utils import configclass
 
 ASSETS_DIR = "/home/lognav/Jardel/path_following_rl_isaac/assets"
@@ -65,6 +66,24 @@ class NavSceneCfg(InteractiveSceneCfg):
     )
 
     robot: ArticulationCfg = TURTLEBOT3_CFG
+
+    # 2D LiDAR (defaults to 180°, can be changed in env_cfg.__post_init__)
+    lidar: RayCasterCfg = RayCasterCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/base_footprint/base_link/base_scan",
+        update_period=0.0,
+        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 0.0)),
+        ray_alignment="yaw",
+        pattern_cfg=patterns.LidarPatternCfg(
+            channels=1,
+            vertical_fov_range=(0.0, 0.0),
+            horizontal_fov_range=(-90.0, 90.0),
+            horizontal_res=7.5,
+        ),
+        max_distance=2.5,
+        drift_range=(0.0, 0.0),
+        debug_vis=False,
+        mesh_prim_paths=["/World"],
+    )
 
     # Obstacles (will be randomized on reset in mdp.reset_obstacles)
     obstacle_0: RigidObjectCfg = RigidObjectCfg(
