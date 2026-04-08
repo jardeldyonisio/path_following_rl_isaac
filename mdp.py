@@ -28,6 +28,53 @@ def _get_current_waypoint(env: ManagerBasedRLEnv):
     idx = torch.clamp(env.waypoint_idx, 0, env.waypoints.shape[1] - 1)
     return env.waypoints[torch.arange(env.num_envs, device=env.device), idx]
 
+def _goal_distance_and_yaw_error(env: ManagerBasedRLEnv) -> tuple[torch.Tensor, torch.Tensor]:
+    '''
+    @brief Compute distance and relative yaw error from robot to current waypoint.
+
+    @return: (distance, yaw_error), both shaped (num_envs,).
+    '''
+    robot = env.scene["robot"]
+    robot_pos = robot.data.root_pos_w[:, :2]
+    yaw = _quat_to_yaw(robot.data.root_quat_w)
+    goals = _get_current_waypoint(env)
+
+    delta = goals - robot_pos
+    dist = torch.norm(delta, dim=1)
+    goal_angle_world = torch.atan2(delta[:, 1], delta[:, 0])
+    rel_angle = _wrap_angle(goal_angle_world - yaw)
+    return dist, rel_angle
+
+def _get_current_raw_actions(env: ManagerBasedRLEnv) -> torch.Tensor:
+    '''
+    @brief Try to recover current normalized raw actions in [-1, 1] from action manager.
+
+    Returns zeros if action access is unavailable.
+    '''
+    zeros = torch.zeros((env.num_envs, 2), device=env.device)
+
+    if not hasattr(env, "action_manager"):
+        return zeros
+
+    action_manager = env.action_manager
+
+    # Common manager-level fields across IsaacLab versions.
+    for name in ("action", "actions", "_action", "_actions"):
+        val = getattr(action_manager, name, None)
+        if torch.is_tensor(val) and val.ndim == 2 and val.shape[0] == env.num_envs and val.shape[1] >= 2:
+            return torch.clamp(val[:, :2], -1.0, 1.0)
+
+    # Term-level fallback: search for the differential-drive term that exposes raw_actions.
+    for terms_attr in ("terms", "_terms"):
+        terms = getattr(action_manager, terms_attr, None)
+        if isinstance(terms, dict):
+            for term in terms.values():
+                raw = getattr(term, "raw_actions", None)
+                if torch.is_tensor(raw) and raw.ndim == 2 and raw.shape[0] == env.num_envs and raw.shape[1] >= 2:
+                    return torch.clamp(raw[:, :2], -1.0, 1.0)
+
+    return zeros
+
 def _advance_waypoint(env: ManagerBasedRLEnv, reached: torch.Tensor):
     '''
     @brief Advance the waypoint index for each environment instance.
@@ -36,6 +83,63 @@ def _advance_waypoint(env: ManagerBasedRLEnv, reached: torch.Tensor):
     '''
     if hasattr(env, 'waypoint_idx'):
         env.waypoint_idx[reached] += 1
+
+def _advance_to_secondary_if_closer(
+    env: ManagerBasedRLEnv,
+    robot_pos: torch.Tensor,
+    main_dist: torch.Tensor,
+    reached: torch.Tensor,
+):
+    '''
+    @brief Advance current goal index to a secondary goal when it is closer than the main goal.
+
+    This mirrors the classic env behavior where passing/being closer to a secondary goal should
+    update the current main goal target.
+    '''
+    if not hasattr(env, "waypoint_idx") or not hasattr(env, "waypoints"):
+        return
+
+    goal_step = int(getattr(env, "goal_step", 1))
+    if goal_step <= 0:
+        goal_step = 1
+    window_size = int(getattr(env, "num_goals_window", 15))
+    if window_size <= 0:
+        window_size = 15
+
+    num_pts = int(env.waypoints.shape[1])
+    idx = env.waypoint_idx.clone()
+
+    # Preserve normal advancement for genuinely reached goals.
+    idx[reached] = idx[reached] + goal_step
+
+    # For non-reached envs, jump to nearest secondary if closer than current main goal.
+    for e in range(env.num_envs):
+        if bool(reached[e].item()):
+            continue
+
+        curr = int(idx[e].item())
+        if curr >= num_pts - 1:
+            continue
+
+        sec_start = curr + goal_step
+        sec_end = min(num_pts, curr + goal_step * window_size)
+        if sec_start >= sec_end:
+            continue
+
+        sec_indices = torch.arange(sec_start, sec_end, goal_step, device=env.device, dtype=torch.long)
+        if sec_indices.numel() == 0:
+            continue
+
+        sec_pts = env.waypoints[e, sec_indices, :]
+        sec_dist = torch.norm(sec_pts - robot_pos[e].unsqueeze(0), dim=1)
+        best_j = int(torch.argmin(sec_dist).item())
+        best_dist = float(sec_dist[best_j].item())
+        curr_dist = float(main_dist[e].item())
+
+        if best_dist < curr_dist:
+            idx[e] = sec_indices[best_j]
+
+    env.waypoint_idx = torch.clamp(idx, 0, num_pts - 1)
 
 def _quat_to_yaw(quat: torch.Tensor):
     '''
@@ -429,21 +533,93 @@ def goal_observation(env: ManagerBasedRLEnv, lookahead: int = 1) -> torch.Tensor
 
     @param lookahead: How many waypoints ahead to look when computing the goal observation. Default is 1 (the current target waypoint).
     '''
-    robot = env.scene["robot"]
-    robot_pos = robot.data.root_pos_w[:, :2]
-    yaw = _quat_to_yaw(robot.data.root_quat_w)
-    goals = _get_current_waypoint(env)
-    
-    delta = goals - robot_pos
-    dist = torch.norm(delta, dim=1, keepdim=True)
-    goal_angle_world = torch.atan2(delta[:, 1], delta[:, 0])
-    rel_angle = _wrap_angle(goal_angle_world - yaw)
+    dist, rel_angle = _goal_distance_and_yaw_error(env)
 
     # Update debug visualization of full waypoint path + current goal.
     _visual_markers(env)
     
-    obs = torch.cat([dist, rel_angle.unsqueeze(1)], dim=1)
+    obs = torch.stack([dist, rel_angle], dim=1)
     return torch.nan_to_num(obs, nan=0.0, posinf=10.0, neginf=-10.0)
+
+def goal_distance_observation(env: ManagerBasedRLEnv) -> torch.Tensor:
+    '''
+    @brief Distance to current main goal. Shape: (num_envs, 1).
+    '''
+    dist, _ = _goal_distance_and_yaw_error(env)
+    return torch.nan_to_num(dist.unsqueeze(1), nan=0.0, posinf=10.0, neginf=0.0)
+
+def yaw_error_observation(env: ManagerBasedRLEnv) -> torch.Tensor:
+    '''
+    @brief Relative yaw error to current main goal. Shape: (num_envs, 1).
+    '''
+    _, rel_angle = _goal_distance_and_yaw_error(env)
+
+    # Keep debug drawing tied to navigation observables.
+    _visual_markers(env)
+
+    return torch.nan_to_num(rel_angle.unsqueeze(1), nan=0.0, posinf=math.pi, neginf=-math.pi)
+
+def previous_action_observation(env: ManagerBasedRLEnv) -> torch.Tensor:
+    '''
+    @brief Previous normalized action [linear_cmd, angular_cmd]. Shape: (num_envs, 2).
+
+    Mirrors the simple simulation, which exposes the action from the prior step.
+    '''
+    prev = env.extras.get("prev_action_obs", None)
+    if prev is None or not torch.is_tensor(prev) or prev.shape != (env.num_envs, 2):
+        prev = torch.zeros((env.num_envs, 2), device=env.device)
+
+    output = prev.clone()
+    current = _get_current_raw_actions(env)
+    env.extras["prev_action_obs"] = current.clone()
+
+    return torch.nan_to_num(output, nan=0.0, posinf=1.0, neginf=-1.0)
+
+def subgoal_window_distance_observation(env: ManagerBasedRLEnv) -> torch.Tensor:
+    '''
+    @brief Distances to secondary goals in current window. Shape: (num_envs, num_goals_window).
+
+    Behavior mirrors the simple env:
+    - Collect distances to available secondary goals only.
+    - If fewer than window size are available, repeat the last available distance.
+    - If none are available, fill with current main-goal distance.
+    '''
+    window_size = int(getattr(env, "num_goals_window", 15))
+    goal_step = int(getattr(env, "goal_step", 1))
+    window_size = max(1, window_size)
+    goal_step = max(1, goal_step)
+
+    out = torch.zeros((env.num_envs, window_size), device=env.device)
+    if not hasattr(env, "waypoints") or not hasattr(env, "waypoint_idx"):
+        return out
+
+    robot_pos = env.scene["robot"].data.root_pos_w[:, :2]
+    main_dist, _ = _goal_distance_and_yaw_error(env)
+    num_pts = int(env.waypoints.shape[1])
+
+    for e in range(env.num_envs):
+        curr = int(torch.clamp(env.waypoint_idx[e], 0, num_pts - 1).item())
+        sec_start = curr + 1
+        sec_end = min(num_pts, curr + goal_step * window_size)
+
+        if sec_start >= sec_end:
+            out[e, :] = main_dist[e]
+            continue
+
+        sec_indices = torch.arange(sec_start, sec_end, goal_step, device=env.device, dtype=torch.long)
+        if sec_indices.numel() == 0:
+            out[e, :] = main_dist[e]
+            continue
+
+        sec_pts = env.waypoints[e, sec_indices, :]
+        d = torch.norm(sec_pts - robot_pos[e].unsqueeze(0), dim=1)
+
+        n = min(window_size, int(d.shape[0]))
+        out[e, :n] = d[:n]
+        if n < window_size:
+            out[e, n:] = d[n - 1] if n > 0 else main_dist[e]
+
+    return torch.nan_to_num(out, nan=0.0, posinf=1e3, neginf=0.0)
 
 def velocity_observation(env: ManagerBasedRLEnv) -> torch.Tensor:
     '''
@@ -480,8 +656,9 @@ def waypoint_reached_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     '''
     robot_pos = env.scene["robot"].data.root_pos_w[:, :2]
     goals = _get_current_waypoint(env)
-    reached = torch.norm(goals - robot_pos, dim=1) < 0.2
-    _advance_waypoint(env, reached)
+    main_dist = torch.norm(goals - robot_pos, dim=1)
+    reached = main_dist < 0.2
+    _advance_to_secondary_if_closer(env, robot_pos, main_dist, reached)
     return reached.float()
 
 def out_of_bounds_penalty(env: ManagerBasedRLEnv, max_dist: float = 2.0) -> torch.Tensor:
@@ -578,6 +755,11 @@ def reset_path_state(env: ManagerBasedRLEnv, env_ids: torch.Tensor):
     
     env.waypoints[env_ids] = waypoints
     env.waypoint_idx[env_ids] = 1
+
+    # Reset previous-action observation buffer for fresh episodes.
+    if "prev_action_obs" not in env.extras or not torch.is_tensor(env.extras.get("prev_action_obs")):
+        env.extras["prev_action_obs"] = torch.zeros((env.num_envs, 2), device=device)
+    env.extras["prev_action_obs"][env_ids] = 0.0
 
 def reset_obstacles(env: ManagerBasedRLEnv, env_ids: torch.Tensor):
     '''

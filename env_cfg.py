@@ -29,9 +29,11 @@ class ObservationsCfg:
     '''
     @configclass
     class PolicyCfg(ObservationGroupCfg):
-        goal_obs = ObservationTermCfg(func=mdp.goal_observation, params={"lookahead": 1})
-        velocity_obs = ObservationTermCfg(func=mdp.velocity_observation)
+        goal_distance_obs = ObservationTermCfg(func=mdp.goal_distance_observation)
+        previous_action_obs = ObservationTermCfg(func=mdp.previous_action_observation)
+        yaw_error_obs = ObservationTermCfg(func=mdp.yaw_error_observation)
         lidar_obs = ObservationTermCfg(func=mdp.lidar_observation)
+        subgoal_distances_obs = ObservationTermCfg(func=mdp.subgoal_window_distance_observation)
 
     policy: PolicyCfg = PolicyCfg()
 
@@ -91,13 +93,13 @@ class TurtlebotNavEnvCfg(ManagerBasedRLEnvCfg):
     events: EventsCfg = EventsCfg()
     
     # Episode settings
-    episode_length_s: float = 10.0
+    episode_length_s: float = 1000.0
     decimation: int = 4
 
-    # LiDAR settings (easy to tune)
+    # LiDAR settings
     lidar_num_rays: int = 24
     lidar_fov_deg: float = 180.0
-    lidar_max_distance: float = 2.5
+    lidar_max_distance: float = 20.0
     lidar_debug_vis: bool = True
     
     def __post_init__(self):
