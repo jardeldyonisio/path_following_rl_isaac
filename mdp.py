@@ -89,7 +89,7 @@ def _advance_to_secondary_if_closer(
     robot_pos: torch.Tensor,
     main_dist: torch.Tensor,
     reached: torch.Tensor,
-):
+)-> torch.Tensor:
     '''
     @brief Advance current goal index to a secondary goal when it is closer than the main goal.
 
@@ -97,7 +97,7 @@ def _advance_to_secondary_if_closer(
     update the current main goal target.
     '''
     if not hasattr(env, "waypoint_idx") or not hasattr(env, "waypoints"):
-        return
+        return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
 
     goal_step = int(getattr(env, "goal_step", 1))
     if goal_step <= 0:
@@ -108,6 +108,7 @@ def _advance_to_secondary_if_closer(
 
     num_pts = int(env.waypoints.shape[1])
     idx = env.waypoint_idx.clone()
+    subgoal_reached = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
 
     # Preserve normal advancement for genuinely reached goals.
     idx[reached] = idx[reached] + goal_step
@@ -138,8 +139,38 @@ def _advance_to_secondary_if_closer(
 
         if best_dist < curr_dist:
             idx[e] = sec_indices[best_j]
+            subgoal_reached[e] = True
 
     env.waypoint_idx = torch.clamp(idx, 0, num_pts - 1)
+    return subgoal_reached
+
+def _yaw_error_to_path(env: ManagerBasedRLEnv) -> torch.Tensor:
+    '''
+    @brief Compute yaw error between robot heading and local direction of closest path segment.
+    '''
+    if not hasattr(env, "waypoints"):
+        return torch.zeros(env.num_envs, device=env.device)
+
+    robot = env.scene["robot"]
+    robot_pos = robot.data.root_pos_w[:, :2]
+    robot_yaw = _quat_to_yaw(robot.data.root_quat_w)
+
+    yaw_error = torch.zeros(env.num_envs, device=env.device)
+    num_pts = int(env.waypoints.shape[1])
+    if num_pts < 2:
+        return yaw_error
+
+    for e in range(env.num_envs):
+        wp = env.waypoints[e]
+        d = torch.norm(wp - robot_pos[e].unsqueeze(0), dim=1)
+        closest_idx = int(torch.argmin(d).item())
+        next_idx = min(closest_idx + 1, num_pts - 1)
+
+        seg = wp[next_idx] - wp[closest_idx]
+        path_dir = torch.atan2(seg[1], seg[0])
+        yaw_error[e] = _wrap_angle(path_dir - robot_yaw[e])
+
+    return torch.nan_to_num(yaw_error, nan=0.0, posinf=math.pi, neginf=-math.pi)
 
 def _quat_to_yaw(quat: torch.Tensor):
     '''
@@ -649,6 +680,55 @@ def progress_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     reward = prev_dist - current_dist
     return torch.nan_to_num(reward, nan=0.0, posinf=1.0, neginf=-1.0)
 
+def reward_goal_reached(env: ManagerBasedRLEnv) -> torch.Tensor:
+    '''
+    @brief +10.0 when current main goal is reached.
+    '''
+    robot_pos = env.scene["robot"].data.root_pos_w[:, :2]
+    goals = _get_current_waypoint(env)
+    main_dist = torch.norm(goals - robot_pos, dim=1)
+    reached = main_dist < 0.2
+
+    subgoal_reached = _advance_to_secondary_if_closer(env, robot_pos, main_dist, reached)
+    env.extras["is_goal_reached"] = reached.clone()
+    env.extras["is_subgoal_reached"] = subgoal_reached.clone()
+
+    return reached.float() * 10.0
+
+def reward_subgoal_reached(env: ManagerBasedRLEnv) -> torch.Tensor:
+    '''
+    @brief +5.0 when a secondary goal becomes the new main goal target.
+    '''
+    subgoal_reached = env.extras.get(
+        "is_subgoal_reached",
+        torch.zeros(env.num_envs, dtype=torch.bool, device=env.device),
+    )
+    return subgoal_reached.float() * 5.0
+
+def reward_success(env: ManagerBasedRLEnv) -> torch.Tensor:
+    '''
+    @brief +100.0 when episode terminates by reaching all waypoints.
+    '''
+    terminated = all_waypoints_reached_termination(env)
+    return terminated.float() * 100.0
+
+def reward_truncated(env: ManagerBasedRLEnv) -> torch.Tensor:
+    '''
+    @brief -100.0 when episode is truncated (timeout/out-of-bounds) but not successful termination.
+    '''
+    terminated = all_waypoints_reached_termination(env)
+    truncated = torch.logical_or(time_out(env), out_of_bounds_termination(env))
+    truncated_only = torch.logical_and(truncated, ~terminated)
+    return truncated_only.float() * -100.0
+
+def reward_direction_penalty(env: ManagerBasedRLEnv, yaw_error_threshold: float = 0.15) -> torch.Tensor:
+    '''
+    @brief -1.0 when abs(yaw_error_to_path) is above threshold.
+    '''
+    yaw_error = _yaw_error_to_path(env)
+    penalty = torch.abs(yaw_error) > float(yaw_error_threshold)
+    return penalty.float() * -1.0
+
 def waypoint_reached_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     '''
     @brief Compute the waypoint reached reward, which gives a positive reward when the robot is within a 
@@ -658,7 +738,7 @@ def waypoint_reached_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     goals = _get_current_waypoint(env)
     main_dist = torch.norm(goals - robot_pos, dim=1)
     reached = main_dist < 0.2
-    _advance_to_secondary_if_closer(env, robot_pos, main_dist, reached)
+    _ = _advance_to_secondary_if_closer(env, robot_pos, main_dist, reached)
     return reached.float()
 
 def out_of_bounds_penalty(env: ManagerBasedRLEnv, max_dist: float = 2.0) -> torch.Tensor:

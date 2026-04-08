@@ -42,10 +42,11 @@ class RewardsCfg:
     '''
     @brief Reward configuration for the robot navigation task.
     '''
-    progress_reward = RewardTermCfg(func=mdp.progress_reward, weight=5.0)
-    waypoint_reached = RewardTermCfg(func=mdp.waypoint_reached_reward, weight=10.0)
-    out_of_bounds_penalty = RewardTermCfg(func=mdp.out_of_bounds_penalty, weight=-1.0)
-    alive_penalty = RewardTermCfg(func=mdp.alive_penalty, weight=-0.01)
+    reward_goal_reached = RewardTermCfg(func=mdp.reward_goal_reached, weight=1.0)
+    reward_subgoal_reached = RewardTermCfg(func=mdp.reward_subgoal_reached, weight=1.0)
+    reward_success = RewardTermCfg(func=mdp.reward_success, weight=1.0)
+    reward_truncated = RewardTermCfg(func=mdp.reward_truncated, weight=1.0)
+    reward_direction_penalty = RewardTermCfg(func=mdp.reward_direction_penalty, weight=1.0)
 
 @configclass
 class TerminationsCfg:
