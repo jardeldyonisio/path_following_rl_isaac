@@ -54,6 +54,7 @@ class TerminationsCfg:
     @brief Termination configuration for the robot navigation task.
     '''
     out_of_bounds = TerminationTermCfg(func=mdp.out_of_bounds_termination)
+    obstacle_collision = TerminationTermCfg(func=mdp.obstacle_collision_termination)
     all_waypoints_reached = TerminationTermCfg(func=mdp.all_waypoints_reached_termination)
     time_out = TerminationTermCfg(func=mdp.time_out, time_out=True)
 

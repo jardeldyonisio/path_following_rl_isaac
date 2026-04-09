@@ -310,6 +310,34 @@ def _analytic_lidar_for_env(
 
     return starts, hits, torch.tensor(dists, device=env.device, dtype=torch.float32)
 
+def _circle_polyline_points(
+    center_xy: tuple[float, float],
+    radius: float,
+    z: float,
+    num_segments: int = 24,
+) -> tuple[list[tuple[float, float, float]], list[tuple[float, float, float]]]:
+    '''
+    @brief Build line segments approximating a circle (for debug draw overlays).
+    '''
+    n = max(8, int(num_segments))
+    cx, cy = float(center_xy[0]), float(center_xy[1])
+    r = max(0.0, float(radius))
+
+    points = []
+    for k in range(n):
+        t = 2.0 * math.pi * (k / n)
+        x = cx + r * math.cos(t)
+        y = cy + r * math.sin(t)
+        points.append((x, y, z))
+
+    p0 = []
+    p1 = []
+    for k in range(n):
+        p0.append(points[k])
+        p1.append(points[(k + 1) % n])
+
+    return p0, p1
+
 def _visual_markers(env: "ManagerBasedRLEnv"):
     '''
     @brief Visualize the goals and path.
@@ -409,6 +437,53 @@ def _visual_markers(env: "ManagerBasedRLEnv"):
             debug_draw.draw_points(points, point_colors, point_sizes)
         except Exception as e:
             print(f"[DEBUG] draw_points failed: {e}")
+
+    # Draw obstacle regions (env_0): core obstacle and inflated safety/costmap radius.
+    try:
+        obstacle_names = [f"obstacle_{i}" for i in range(5)]
+        obstacle_radii = getattr(env, "obstacle_radii", [0.25, 0.22, 0.20, 0.18, 0.16])
+        inflation_radius = float(getattr(env, "obstacle_inflation_radius", 0.2))
+
+        obs_p0 = []
+        obs_p1 = []
+        obs_colors = []
+        obs_widths = []
+
+        for i, name in enumerate(obstacle_names):
+            try:
+                pos = env.scene[name].data.root_pos_w[env_id]
+            except Exception:
+                continue
+
+            x = float(pos[0].item())
+            y = float(pos[1].item())
+            z_obs = float(pos[2].item()) + 0.02
+
+            # Skip disabled obstacles that are moved far away.
+            if abs(x) > 40.0 or abs(y) > 40.0:
+                continue
+
+            r_core = float(obstacle_radii[i]) if i < len(obstacle_radii) else float(obstacle_radii[-1])
+            r_infl = r_core + inflation_radius
+
+            core_p0, core_p1 = _circle_polyline_points((x, y), r_core, z_obs, num_segments=24)
+            infl_p0, infl_p1 = _circle_polyline_points((x, y), r_infl, z_obs, num_segments=24)
+
+            obs_p0.extend(core_p0)
+            obs_p1.extend(core_p1)
+            obs_colors.extend([(1.0, 0.1, 0.1, 0.95)] * len(core_p0))  # red core
+            obs_widths.extend([2.0] * len(core_p0))
+
+            obs_p0.extend(infl_p0)
+            obs_p1.extend(infl_p1)
+            obs_colors.extend([(1.0, 0.4, 0.4, 0.45)] * len(infl_p0))  # light red inflated
+            obs_widths.extend([1.0] * len(infl_p0))
+
+        if obs_p0:
+            debug_draw.draw_lines(obs_p0, obs_p1, obs_colors, obs_widths)
+    except Exception:
+        # Keep silent to avoid flooding if obstacle assets are unavailable.
+        pass
 
     # Draw LiDAR rays (env_0) if sensor is available and visualization enabled.
     if bool(getattr(env, "lidar_debug_vis", True)):
@@ -718,6 +793,7 @@ def reward_truncated(env: ManagerBasedRLEnv) -> torch.Tensor:
     '''
     terminated = all_waypoints_reached_termination(env)
     truncated = torch.logical_or(time_out(env), out_of_bounds_termination(env))
+    truncated = torch.logical_or(truncated, obstacle_collision_termination(env))
     truncated_only = torch.logical_and(truncated, ~terminated)
     return truncated_only.float() * -100.0
 
@@ -758,6 +834,30 @@ def out_of_bounds_termination(env: ManagerBasedRLEnv, max_dist: float = 2.0) -> 
     @brief Compute the out-of-bounds termination condition, which is True when the robot moves too far from the current target waypoint.
     '''
     return torch.norm(_get_current_waypoint(env) - env.scene["robot"].data.root_pos_w[:, :2], dim=1) > max_dist
+
+def obstacle_collision_termination(env: ManagerBasedRLEnv, robot_radius: float = 0.105) -> torch.Tensor:
+    '''
+    @brief Circle-overlap collision check (simple-env style) between robot and obstacles.
+
+    A collision occurs when the 2D center distance is less than the sum of radii.
+    '''
+    robot_xy = env.scene["robot"].data.root_pos_w[:, :2]
+    collision = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+
+    obstacle_names = [f"obstacle_{i}" for i in range(5)]
+    obstacle_radii = getattr(env, "obstacle_radii", [0.25, 0.22, 0.20, 0.18, 0.16])
+
+    for i, name in enumerate(obstacle_names):
+        try:
+            obs_xy = env.scene[name].data.root_pos_w[:, :2]
+        except Exception:
+            continue
+
+        obs_r = float(obstacle_radii[i]) if i < len(obstacle_radii) else float(obstacle_radii[-1])
+        dist = torch.norm(robot_xy - obs_xy, dim=1)
+        collision = torch.logical_or(collision, dist < (float(robot_radius) + obs_r))
+
+    return collision
 
 def all_waypoints_reached_termination(env: ManagerBasedRLEnv) -> torch.Tensor:
     '''
