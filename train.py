@@ -111,10 +111,10 @@ os.makedirs(checkpoints_dir, exist_ok=True)
 os.makedirs(best_dir,        exist_ok=True)
 os.makedirs(final_dir,       exist_ok=True)
 
-print(f"� TensorBoard : {runs_dir}")
-print(f"💾 Checkpoints : {checkpoints_dir}")
-print(f"🏆 Best model  : {best_dir}")
-print(f"✅ Final model  : {final_dir}")
+print(f"TensorBoard : {runs_dir}")
+print(f"Checkpoints : {checkpoints_dir}")
+print(f"Best model  : {best_dir}")
+print(f"Final model  : {final_dir}")
 
 models = {
     "policy": Actor(env.observation_space, env.action_space, device),
