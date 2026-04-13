@@ -205,9 +205,19 @@ for episode in range(args.max_episodes):
             timesteps=total_timesteps,
         )
 
-        # Learning step
+        # Learning step — log losses per step (mirrors simple env pattern)
         if step >= args.seed_steps:
             agent.post_interaction(timestep=step, timesteps=total_timesteps)
+
+            tracking = getattr(agent, "tracking_data", {})
+            if "Loss / Critic loss" in tracking and tracking["Loss / Critic loss"]:
+                tb_writer.add_scalar("Loss/Critic", float(np.mean(tracking["Loss / Critic loss"])), step)
+            if "Exploration / Exploration noise (mean)" in tracking and tracking["Exploration / Exploration noise (mean)"]:
+                tb_writer.add_scalar("Exploration/Noise_mean", float(np.mean(tracking["Exploration / Exploration noise (mean)"])), step)
+            if "Q-network / Q1 (mean)" in tracking and tracking["Q-network / Q1 (mean)"]:
+                tb_writer.add_scalar("Q-network/Q1_mean", float(np.mean(tracking["Q-network / Q1 (mean)"])), step)
+            if "Target / Target (mean)" in tracking and tracking["Target / Target (mean)"]:
+                tb_writer.add_scalar("Target/Target_mean", float(np.mean(tracking["Target / Target (mean)"])), step)
 
         episode_reward += float(reward.mean().item())
         obs = next_obs
@@ -220,9 +230,9 @@ for episode in range(args.max_episodes):
     episode_rewards.append(episode_reward)
     avg_reward_last_10 = float(np.mean(episode_rewards[-10:]))
 
-    tb_writer.add_scalar("Reward/Episode",                  episode_reward,    episode)
-    tb_writer.add_scalar("Reward/Avg_last_10_episodes",     avg_reward_last_10, episode)
-    tb_writer.add_scalar("Train/Total_steps",               step,               episode)
+    tb_writer.add_scalar("Reward/Episode",              episode_reward,     episode)
+    tb_writer.add_scalar("Reward/Avg_last_10_episodes", avg_reward_last_10, episode)
+    tb_writer.add_scalar("Train/Total_steps",           step,               episode)
 
     sys.stdout.write(
         f"episode: {episode:6d} | reward: {episode_reward:8.2f} | "
@@ -234,17 +244,17 @@ for episode in range(args.max_episodes):
     if episode > 0 and episode % 1000 == 0:
         ckpt_path = os.path.join(checkpoints_dir, f"agent_{episode}.pt")
         agent.save(ckpt_path)
-        print(f"💾 Checkpoint saved: {ckpt_path}")
+        print(f"Checkpoint saved: {ckpt_path}")
 
     # ---- Best model (mirrors simple env pattern) ----
     if avg_reward_last_10 >= last_best_avg_reward:
         last_best_avg_reward = avg_reward_last_10
         agent.save(os.path.join(best_dir, "best_agent.pt"))
-        print(f"🏆 New best avg reward {avg_reward_last_10:.2f} — model saved to: {best_dir}")
+        print(f"New best avg reward {avg_reward_last_10:.2f} — model saved to: {best_dir}")
 
 # Save final model
 agent.save(os.path.join(final_dir, "final_agent.pt"))
-print(f"✅ Final model saved to: {final_dir}")
+print(f"Final model saved to: {final_dir}")
 
 tb_writer.close()
 simulation_app.close()
