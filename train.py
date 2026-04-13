@@ -64,7 +64,7 @@ class Actor(DeterministicMixin, Model):
         states = torch.nan_to_num(inputs["states"], nan=0.0, posinf=10.0, neginf=-10.0)
         output = self.net(states)
         if torch.isnan(output).any():
-            print(f"🚨 [ACTOR NaN] States: {states[0].detach().cpu().numpy()}")
+            print(f"[ACTOR NaN] States: {states[0].detach().cpu().numpy()}")
         output = torch.nan_to_num(output, nan=0.0, posinf=1.0, neginf=-1.0)
         return output, {}
 
@@ -88,7 +88,7 @@ class Critic(DeterministicMixin, Model):
         sa = torch.cat([states, actions], dim=1)
         q_value = self.net(sa)
         if torch.isnan(q_value).any():
-            print(f"🚨 [CRITIC NaN] Q-value exploded!")
+            print(f"[CRITIC NaN] Q-value exploded!")
         q_value = torch.nan_to_num(q_value, nan=0.0, posinf=1e3, neginf=-1e3)
         return q_value, {}
 
@@ -154,7 +154,7 @@ td3_cfg["experiment"]["write_tensorboard"]   = False
 
 # TensorBoard event files go into runs_dir only
 tb_writer = SummaryWriter(log_dir=runs_dir)
-print(f"📊 TensorBoard logs will be written to: {runs_dir}")
+print(f"TensorBoard logs will be written to: {runs_dir}")
 
 agent = TD3(models=models, memory=RandomMemory(1000000, env.num_envs, device), 
             cfg=td3_cfg, observation_space=env.observation_space, 
