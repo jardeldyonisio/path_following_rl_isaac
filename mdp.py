@@ -262,16 +262,20 @@ def _analytic_lidar_for_env(
     else:
         rel_angles = np.linspace(-0.5 * np.deg2rad(fov_deg), 0.5 * np.deg2rad(fov_deg), num_rays, dtype=np.float32)
 
-    obstacle_names = [f"obstacle_{i}" for i in range(5)]
-    obstacle_radii = getattr(env, "obstacle_radii", [0.25, 0.22, 0.20, 0.18, 0.16])
-
+    # Easy to change: update this and scene_cfg.NUM_OBSTACLES together
+    num_obstacles = 12
+    obstacle_names = [f"obstacle_{i}" for i in range(num_obstacles)]
+    obstacle_radii = torch.linspace(0.16, 0.25, num_obstacles, device=env.device)
+    
     centers = []
     radii = []
+    
+    # Get all obstacle positions for this environment
     for i, name in enumerate(obstacle_names):
         try:
             pos_xy = env.scene[name].data.root_pos_w[env_id, :2]
             centers.append(pos_xy)
-            radii.append(float(obstacle_radii[i]))
+            radii.append(float(obstacle_radii[i].item()))
         except Exception:
             continue
 
@@ -440,8 +444,9 @@ def _visual_markers(env: "ManagerBasedRLEnv"):
 
     # Draw obstacle regions (env_0): core obstacle and inflated safety/costmap radius.
     try:
-        obstacle_names = [f"obstacle_{i}" for i in range(5)]
-        obstacle_radii = getattr(env, "obstacle_radii", [0.25, 0.22, 0.20, 0.18, 0.16])
+        num_obstacles = 30  # Easy to change (match scene_cfg.NUM_OBSTACLES)
+        obstacle_names = [f"obstacle_{i}" for i in range(num_obstacles)]
+        obstacle_radii = torch.linspace(0.16, 0.25, num_obstacles, device=env.device)
         inflation_radius = float(getattr(env, "obstacle_inflation_radius", 0.2))
 
         obs_p0 = []
@@ -463,7 +468,7 @@ def _visual_markers(env: "ManagerBasedRLEnv"):
             if abs(x) > 40.0 or abs(y) > 40.0:
                 continue
 
-            r_core = float(obstacle_radii[i]) if i < len(obstacle_radii) else float(obstacle_radii[-1])
+            r_core = float(obstacle_radii[i].item())
             r_infl = r_core + inflation_radius
 
             core_p0, core_p1 = _circle_polyline_points((x, y), r_core, z_obs, num_segments=24)
@@ -844,8 +849,9 @@ def obstacle_collision_termination(env: ManagerBasedRLEnv, robot_radius: float =
     robot_xy = env.scene["robot"].data.root_pos_w[:, :2]
     collision = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
 
-    obstacle_names = [f"obstacle_{i}" for i in range(5)]
-    obstacle_radii = getattr(env, "obstacle_radii", [0.25, 0.22, 0.20, 0.18, 0.16])
+    num_obstacles = 30  # Easy to change (match scene_cfg.NUM_OBSTACLES)
+    obstacle_names = [f"obstacle_{i}" for i in range(num_obstacles)]
+    obstacle_radii = torch.linspace(0.16, 0.25, num_obstacles, device=env.device)
 
     for i, name in enumerate(obstacle_names):
         try:
@@ -853,7 +859,7 @@ def obstacle_collision_termination(env: ManagerBasedRLEnv, robot_radius: float =
         except Exception:
             continue
 
-        obs_r = float(obstacle_radii[i]) if i < len(obstacle_radii) else float(obstacle_radii[-1])
+        obs_r = float(obstacle_radii[i].item())
         dist = torch.norm(robot_xy - obs_xy, dim=1)
         collision = torch.logical_or(collision, dist < (float(robot_radius) + obs_r))
 
@@ -943,15 +949,16 @@ def reset_path_state(env: ManagerBasedRLEnv, env_ids: torch.Tensor):
 
 def reset_obstacles(env: ManagerBasedRLEnv, env_ids: torch.Tensor):
     '''
-    @brief Reset obstacles for the given env IDs, similar in spirit to path_multiple_obstacles_lidar.py.
+    @brief Reset obstacles for the given env IDs.
 
     - Randomly enables 0..N obstacles per env.
     - Places active obstacles near path points with lateral offsets.
     - Moves inactive obstacles far away.
     '''
-    obstacle_names = [f"obstacle_{i}" for i in range(5)]
-    obstacle_radii = [0.25, 0.22, 0.20, 0.18, 0.16]
-
+    num_obstacles = 30  # Easy to change (match scene_cfg.NUM_OBSTACLES)
+    obstacle_names = [f"obstacle_{i}" for i in range(num_obstacles)]
+    obstacle_radii = torch.linspace(0.16, 0.25, num_obstacles, device=env.device)
+    
     # Resolve obstacle assets once.
     obstacles = []
     for name in obstacle_names:
@@ -971,8 +978,8 @@ def reset_obstacles(env: ManagerBasedRLEnv, env_ids: torch.Tensor):
         if wp.shape[0] < 3:
             continue
 
-        # Random number of obstacles [0, 5]
-        num_obs = int(torch.randint(low=0, high=len(obstacles) + 1, size=(1,), device=device).item())
+        # Random number of obstacles [0, num_obstacles]
+        num_active = int(torch.randint(low=0, high=num_obstacles + 1, size=(1,), device=device).item())
 
         # Sample candidate indices away from very start/end.
         idx_low = 2
@@ -981,7 +988,7 @@ def reset_obstacles(env: ManagerBasedRLEnv, env_ids: torch.Tensor):
         if idx_high <= idx_low:
             chosen_indices = []
         else:
-            num_choices = min(num_obs, idx_high - idx_low)
+            num_choices = min(num_active, idx_high - idx_low)
             perm = torch.randperm(idx_high - idx_low, device=device)[:num_choices] + idx_low
             chosen_indices = perm.tolist()
 
@@ -1012,34 +1019,24 @@ def reset_obstacles(env: ManagerBasedRLEnv, env_ids: torch.Tensor):
                     device=device,
                     dtype=torch.float32,
                 )
-
-                try:
-                    obstacle.write_root_pose_to_sim(pose, env_ids=torch.tensor([env_id], device=device, dtype=torch.long))
-                except Exception:
-                    # Fallback path for API variants that only expose root state writes.
-                    root_state = obstacle.data.default_root_state[torch.tensor([env_id], device=device, dtype=torch.long)].clone()
-                    root_state[:, 0] = pose[:, 0]
-                    root_state[:, 1] = pose[:, 1]
-                    root_state[:, 2] = pose[:, 2]
-                    root_state[:, 3:7] = pose[:, 3:7]
-                    root_state[:, 7:13] = 0.0
-                    obstacle.write_root_state_to_sim(root_state, env_ids=torch.tensor([env_id], device=device, dtype=torch.long))
             else:
                 # Disable unused obstacles by moving them far away.
-                far_x = float(env.scene.env_origins[env_id, 0].item() + 50.0 + i * 2.0)
-                far_y = float(env.scene.env_origins[env_id, 1].item() + 50.0)
+                far_x = float(env.scene.env_origins[env_id, 0].item() + 100.0 + i * 2.0)
+                far_y = float(env.scene.env_origins[env_id, 1].item() + 100.0)
                 pose = torch.tensor(
                     [[far_x, far_y, 0.2, 1.0, 0.0, 0.0, 0.0]],
                     device=device,
                     dtype=torch.float32,
                 )
-                try:
-                    obstacle.write_root_pose_to_sim(pose, env_ids=torch.tensor([env_id], device=device, dtype=torch.long))
-                except Exception:
-                    root_state = obstacle.data.default_root_state[torch.tensor([env_id], device=device, dtype=torch.long)].clone()
-                    root_state[:, 0] = pose[:, 0]
-                    root_state[:, 1] = pose[:, 1]
-                    root_state[:, 2] = pose[:, 2]
-                    root_state[:, 3:7] = pose[:, 3:7]
-                    root_state[:, 7:13] = 0.0
-                    obstacle.write_root_state_to_sim(root_state, env_ids=torch.tensor([env_id], device=device, dtype=torch.long))
+
+            try:
+                obstacle.write_root_pose_to_sim(pose, env_ids=torch.tensor([env_id], device=device, dtype=torch.long))
+            except Exception:
+                # Fallback path for API variants that only expose root state writes.
+                root_state = obstacle.data.default_root_state[torch.tensor([env_id], device=device, dtype=torch.long)].clone()
+                root_state[:, 0] = pose[:, 0]
+                root_state[:, 1] = pose[:, 1]
+                root_state[:, 2] = pose[:, 2]
+                root_state[:, 3:7] = pose[:, 3:7]
+                root_state[:, 7:13] = 0.0
+                obstacle.write_root_state_to_sim(root_state, env_ids=torch.tensor([env_id], device=device, dtype=torch.long))
