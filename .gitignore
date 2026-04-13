@@ -58,3 +58,6 @@ __pycache__/
 
 # Training runs and logs
 runs/
+
+# Trained models
+models/
