@@ -52,3 +52,9 @@ CATKIN_IGNORE
 
 # pycache
 __pycache__/
+
+# PyTorch model checkpoints
+*.pt
+
+# Training runs and logs
+runs/
