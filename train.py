@@ -25,6 +25,7 @@ from skrl.memories.torch import RandomMemory
 from skrl.models.torch import DeterministicMixin, Model
 from skrl.trainers.torch import SequentialTrainer
 from skrl.utils import set_seed
+from torch.utils.tensorboard import SummaryWriter
 
 sys.path.insert(0, os.path.dirname(__file__))
 from env_cfg import TurtlebotNavEnvCfg
@@ -95,10 +96,14 @@ class Critic(DeterministicMixin, Model):
 # Setup
 # ---------------------------------------------------------------------------
 
-if os.path.exists("runs/turtlebot_nav"):
-    shutil.rmtree("runs/turtlebot_nav")
+# Use absolute path to ensure checkpoints stay in project directory
+project_dir = os.path.dirname(os.path.abspath(__file__))
+runs_dir = os.path.join(project_dir, "runs/turtlebot_nav")
 
-os.makedirs("runs/turtlebot_nav/td3_final/checkpoints", exist_ok=True)
+if os.path.exists(runs_dir):
+    shutil.rmtree(runs_dir)
+
+os.makedirs(os.path.join(runs_dir, "td3_final/checkpoints"), exist_ok=True)
 
 models = {
     "policy": Actor(env.observation_space, env.action_space, device),
@@ -128,12 +133,25 @@ td3_cfg["exploration"]["noise"] = DrQv2Noise(
 td3_cfg["smooth_regularization_noise"] = FixedGaussianNoise(mean=0.0, std=0.2, device=device)
 td3_cfg["smooth_regularization_clip"] = 0.5
 
-td3_cfg["experiment"]["directory"] = "runs/turtlebot_nav"
+# Use absolute paths to keep everything in project directory
+td3_cfg["experiment"]["directory"] = runs_dir
 td3_cfg["experiment"]["experiment_name"] = "td3_final"
+# Ensure TensorBoard event files are written periodically.
+td3_cfg["experiment"]["write_interval"] = 250
+td3_cfg["experiment"]["checkpoint_interval"] = 1000
+td3_cfg["experiment"]["write_tensorboard"] = True
+
+# Explicit TensorBoard writer to guarantee event file creation
+tb_log_dir = os.path.join(runs_dir, "td3_final")
+tb_writer = SummaryWriter(log_dir=tb_log_dir)
+print(f"📊 TensorBoard logs will be written to: {tb_log_dir}")
 
 agent = TD3(models=models, memory=RandomMemory(1000000, env.num_envs, device), 
             cfg=td3_cfg, observation_space=env.observation_space, 
             action_space=env.action_space, device=device)
+
+# Inject writer into agent experiment tracking
+agent.writer = tb_writer
 
 trainer = SequentialTrainer(cfg={"timesteps": total_timesteps}, env=env, agents=agent)
 
