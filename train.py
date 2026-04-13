@@ -3,8 +3,8 @@ import copy
 import torch
 import os
 import sys
-import shutil
 
+from datetime import datetime
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="Train TurtleBot3 navigation with TD3")
@@ -96,14 +96,18 @@ class Critic(DeterministicMixin, Model):
 # Setup
 # ---------------------------------------------------------------------------
 
-# Use absolute path to ensure checkpoints stay in project directory
+# Timestamped directories to keep each run separate (matches simple env pattern)
 project_dir = os.path.dirname(os.path.abspath(__file__))
-runs_dir = os.path.join(project_dir, "runs/turtlebot_nav")
+timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-if os.path.exists(runs_dir):
-    shutil.rmtree(runs_dir)
+runs_dir   = os.path.join(project_dir, "runs", "td3_path_following", timestamp)
+models_dir = os.path.join(project_dir, "models", timestamp)
 
-os.makedirs(os.path.join(runs_dir, "td3_final/checkpoints"), exist_ok=True)
+os.makedirs(runs_dir,   exist_ok=True)
+os.makedirs(models_dir, exist_ok=True)
+
+print(f"📁 Run  dir : {runs_dir}")
+print(f"📁 Model dir: {models_dir}")
 
 models = {
     "policy": Actor(env.observation_space, env.action_space, device),
@@ -135,16 +139,14 @@ td3_cfg["smooth_regularization_clip"] = 0.5
 
 # Use absolute paths to keep everything in project directory
 td3_cfg["experiment"]["directory"] = runs_dir
-td3_cfg["experiment"]["experiment_name"] = "td3_final"
-# Ensure TensorBoard event files are written periodically.
+td3_cfg["experiment"]["experiment_name"] = "checkpoints"
 td3_cfg["experiment"]["write_interval"] = 250
 td3_cfg["experiment"]["checkpoint_interval"] = 1000
 td3_cfg["experiment"]["write_tensorboard"] = True
 
-# Explicit TensorBoard writer to guarantee event file creation
-tb_log_dir = os.path.join(runs_dir, "td3_final")
-tb_writer = SummaryWriter(log_dir=tb_log_dir)
-print(f"📊 TensorBoard logs will be written to: {tb_log_dir}")
+# TensorBoard logs go directly into the timestamped run folder
+tb_writer = SummaryWriter(log_dir=runs_dir)
+print(f"📊 TensorBoard logs will be written to: {runs_dir}")
 
 agent = TD3(models=models, memory=RandomMemory(1000000, env.num_envs, device), 
             cfg=td3_cfg, observation_space=env.observation_space, 
@@ -156,4 +158,10 @@ agent.writer = tb_writer
 trainer = SequentialTrainer(cfg={"timesteps": total_timesteps}, env=env, agents=agent)
 
 trainer.train()
+
+# Save final model into models/{timestamp}/
+agent.save(models_dir)
+print(f"✅ Final model saved to: {models_dir}")
+
+tb_writer.close()
 simulation_app.close()
