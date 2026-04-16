@@ -37,13 +37,9 @@ set_seed(args.seed)
 env_cfg = TurtlebotNavEnvCfg()
 env_cfg.scene.num_envs = args.num_envs
 env_cfg.seed = args.seed
-env = ManagerBasedRLEnv(cfg=env_cfg)
-env = SkrlVecEnvWrapper(env, ml_framework="torch")
+raw_env = ManagerBasedRLEnv(cfg=env_cfg)
+env = SkrlVecEnvWrapper(raw_env, ml_framework="torch")
 device = env.device
-
-# ---------------------------------------------------------------------------
-# STABLE MODELS (With LayerNorm and Prints)
-# ---------------------------------------------------------------------------
 
 class Actor(DeterministicMixin, Model):
     def __init__(self, observation_space, action_space, device, clip_actions=True):
@@ -91,10 +87,6 @@ class Critic(DeterministicMixin, Model):
             print(f"[CRITIC NaN] Q-value exploded!")
         q_value = torch.nan_to_num(q_value, nan=0.0, posinf=1e3, neginf=-1e3)
         return q_value, {}
-
-# ---------------------------------------------------------------------------
-# Setup
-# ---------------------------------------------------------------------------
 
 # Timestamped directories to keep each run separate (matches simple env pattern)
 project_dir     = os.path.dirname(os.path.abspath(__file__))
@@ -173,9 +165,32 @@ step                 = 0
 
 agent.init()  # initialise skrl internal state before stepping manually
 
+from mdp import reset_path_state, reset_robot_pose, reset_obstacles
+
 for episode in range(args.max_episodes):
 
     obs, _ = env.reset()
+    
+    # CRITICAL: Manually trigger reset event functions since external env.reset()
+    # does NOT automatically invoke the event manager's reset events.
+    # We must explicitly call these to regenerate paths and reposition the robot.
+    all_env_ids = torch.arange(env.num_envs, device=device, dtype=torch.long)
+    reset_path_state(raw_env, all_env_ids)
+    reset_obstacles(raw_env, all_env_ids)
+    reset_robot_pose(raw_env, all_env_ids)
+    
+    # After manual resets, get fresh observation
+    obs, _ = env.reset()
+    
+    # DEBUG: Verify reset worked
+    if episode > 0:
+        robot_pos = raw_env.scene["robot"].data.root_pos_w[0, :2]
+        wp0 = raw_env.waypoints[0, 0, :2] if hasattr(raw_env, 'waypoints') else torch.zeros(2)
+        dist = float(torch.norm(robot_pos - wp0).item())
+        wp_idx = int(raw_env.waypoint_idx[0].item()) if hasattr(raw_env, 'waypoint_idx') else -1
+        print(f"[EP {episode} AFTER RESET] pos=({robot_pos[0]:.3f},{robot_pos[1]:.3f}), "
+              f"wp0=({wp0[0]:.3f},{wp0[1]:.3f}), dist={dist:.4f}, wp_idx={wp_idx}")
+    
     episode_reward = 0.0
 
     for _ in range(args.max_steps):
@@ -191,6 +206,35 @@ for episode in range(args.max_episodes):
                 action = agent.act(obs, timestep=step, timesteps=total_timesteps)[0]
 
         next_obs, reward, terminated, truncated, info = env.step(action)
+
+        done = terminated.any() or truncated.any()
+
+        # DEBUG: Print when termination/truncation fires
+        if step % 500 == 0 or done:
+            print(f"[STEP {step}] term={terminated}, trunc={truncated}, done={done}")
+
+        # Manually trigger resets for truncated (timed-out) environments
+        # since time_out=True prevents the event manager from auto-resetting.
+        if truncated.any():
+            from mdp import reset_path_state, reset_robot_pose, reset_obstacles
+            # Handle both scalar and (num_envs,) shaped tensors
+            if truncated.dim() == 0:
+                truncated_ids = torch.tensor([0], device=device)
+            elif truncated.dim() == 1:
+                truncated_ids = torch.where(truncated)[0]
+            else:
+                truncated_ids = torch.where(truncated.any(dim=1))[0]
+            
+            print(f"[TRUNCATED RESET] truncated_ids={truncated_ids}")
+            
+            if truncated_ids.numel() > 0:
+                # Access the raw ManagerBasedRLEnv via the wrapper
+                raw_env = env.env
+                print(f"[TRUNCATED RESET] Calling reset functions for envs {truncated_ids.tolist()}...")
+                reset_path_state(raw_env, truncated_ids)
+                reset_obstacles(raw_env, truncated_ids)
+                reset_robot_pose(raw_env, truncated_ids)
+                print(f"[TRUNCATED RESET] Reset complete")
 
         # Store transition in replay buffer
         agent.record_transition(
@@ -223,7 +267,10 @@ for episode in range(args.max_episodes):
         obs = next_obs
         step += 1
 
-        if terminated.any() or truncated.any():
+        if done:
+            # IsaacLab auto-resets terminated envs inside env.step() and
+            # returns the fresh first observation in next_obs — use it directly.
+            obs = next_obs
             break
 
     # ---- Per-episode bookkeeping ----

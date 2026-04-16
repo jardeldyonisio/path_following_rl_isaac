@@ -141,7 +141,9 @@ def _advance_to_secondary_if_closer(
             idx[e] = sec_indices[best_j]
             subgoal_reached[e] = True
 
-    env.waypoint_idx = torch.clamp(idx, 0, num_pts - 1)
+    # Allow idx to reach num_pts so past_end termination can fire.
+    # Only clamp the lower bound to 0; upper bound is num_pts (inclusive).
+    env.waypoint_idx = torch.clamp(idx, 0, num_pts)
     return subgoal_reached
 
 def _yaw_error_to_path(env: ManagerBasedRLEnv) -> torch.Tensor:
@@ -263,7 +265,7 @@ def _analytic_lidar_for_env(
         rel_angles = np.linspace(-0.5 * np.deg2rad(fov_deg), 0.5 * np.deg2rad(fov_deg), num_rays, dtype=np.float32)
 
     # Easy to change: update this and scene_cfg.NUM_OBSTACLES together
-    num_obstacles = 12
+    num_obstacles = 30
     obstacle_names = [f"obstacle_{i}" for i in range(num_obstacles)]
     obstacle_radii = torch.linspace(0.16, 0.25, num_obstacles, device=env.device)
     
@@ -769,6 +771,9 @@ def reward_goal_reached(env: ManagerBasedRLEnv) -> torch.Tensor:
     main_dist = torch.norm(goals - robot_pos, dim=1)
     reached = main_dist < 0.2
 
+    # Always advance by 1 for directly-reached waypoints first,
+    # then check if a closer secondary exists beyond that.
+    _advance_waypoint(env, reached)
     subgoal_reached = _advance_to_secondary_if_closer(env, robot_pos, main_dist, reached)
     env.extras["is_goal_reached"] = reached.clone()
     env.extras["is_subgoal_reached"] = subgoal_reached.clone()
@@ -834,9 +839,11 @@ def alive_penalty(env: ManagerBasedRLEnv) -> torch.Tensor:
     '''
     return -torch.ones(env.num_envs, device=env.device)
 
-def out_of_bounds_termination(env: ManagerBasedRLEnv, max_dist: float = 2.0) -> torch.Tensor:
+def out_of_bounds_termination(env: ManagerBasedRLEnv, max_dist: float = 3.0) -> torch.Tensor:
     '''
     @brief Compute the out-of-bounds termination condition, which is True when the robot moves too far from the current target waypoint.
+    
+    max_dist=3.0 gives enough room given waypoints are spaced 1.0m apart.
     '''
     return torch.norm(_get_current_waypoint(env) - env.scene["robot"].data.root_pos_w[:, :2], dim=1) > max_dist
 
@@ -868,10 +875,26 @@ def obstacle_collision_termination(env: ManagerBasedRLEnv, robot_radius: float =
 def all_waypoints_reached_termination(env: ManagerBasedRLEnv) -> torch.Tensor:
     '''
     @brief Compute the termination condition for when all waypoints have been reached.
+
+    Triggers when waypoint_idx has been advanced past the last point OR the robot
+    is within 0.2 m of the final waypoint while already tracking it.
     '''
     if not hasattr(env, 'waypoints'):
         return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
-    return env.waypoint_idx >= env.waypoints.shape[1]
+
+    num_pts = env.waypoints.shape[1]
+
+    # Primary: index advanced beyond the last waypoint
+    past_end = env.waypoint_idx >= num_pts
+
+    # Secondary: robot is physically close to the last waypoint
+    last_idx = num_pts - 1
+    robot_pos = env.scene["robot"].data.root_pos_w[:, :2]
+    last_wp = env.waypoints[torch.arange(env.num_envs, device=env.device), last_idx]
+    dist_to_last = torch.norm(last_wp - robot_pos, dim=1)
+    at_last_wp = (env.waypoint_idx >= last_idx) & (dist_to_last < 0.2)
+
+    return past_end | at_last_wp
 
 def time_out(env: ManagerBasedRLEnv) -> torch.Tensor:
     '''

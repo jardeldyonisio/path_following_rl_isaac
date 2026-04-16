@@ -47,6 +47,7 @@ class RewardsCfg:
     reward_success = RewardTermCfg(func=mdp.reward_success, weight=1.0)
     reward_truncated = RewardTermCfg(func=mdp.reward_truncated, weight=1.0)
     reward_direction_penalty = RewardTermCfg(func=mdp.reward_direction_penalty, weight=1.0)
+    progress_reward = RewardTermCfg(func=mdp.progress_reward, weight=1.0)
 
 @configclass
 class TerminationsCfg:
