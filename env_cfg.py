@@ -40,7 +40,7 @@ class ObservationsCfg:
 @configclass
 class RewardsCfg:
     '''
-    @brief Reward configuration for the robot navigation task.
+    @brief Reward configuration for the robot.
     '''
     reward_goal_reached = RewardTermCfg(func=mdp.reward_goal_reached, weight=1.0)
     reward_subgoal_reached = RewardTermCfg(func=mdp.reward_subgoal_reached, weight=1.0)
@@ -48,11 +48,13 @@ class RewardsCfg:
     reward_truncated = RewardTermCfg(func=mdp.reward_truncated, weight=1.0)
     reward_direction_penalty = RewardTermCfg(func=mdp.reward_direction_penalty, weight=1.0)
     progress_reward = RewardTermCfg(func=mdp.progress_reward, weight=1.0)
+    alive_penalty = RewardTermCfg(func=mdp.alive_penalty, weight=1.0)
+    out_of_bounds_penalty = RewardTermCfg(func=mdp.out_of_bounds_penalty, weight=1.0)
 
 @configclass
 class TerminationsCfg:
     '''
-    @brief Termination configuration for the robot navigation task.
+    @brief Termination configuration for the robot.
     '''
     out_of_bounds = TerminationTermCfg(func=mdp.out_of_bounds_termination)
     obstacle_collision = TerminationTermCfg(func=mdp.obstacle_collision_termination)
