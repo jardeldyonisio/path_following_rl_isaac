@@ -265,7 +265,7 @@ def _analytic_lidar_for_env(
         rel_angles = np.linspace(-0.5 * np.deg2rad(fov_deg), 0.5 * np.deg2rad(fov_deg), num_rays, dtype=np.float32)
 
     # Easy to change: update this and scene_cfg.NUM_OBSTACLES together
-    num_obstacles = 30
+    num_obstacles = 12
     obstacle_names = [f"obstacle_{i}" for i in range(num_obstacles)]
     obstacle_radii = torch.linspace(0.16, 0.25, num_obstacles, device=env.device)
     
@@ -446,7 +446,7 @@ def _visual_markers(env: "ManagerBasedRLEnv"):
 
     # Draw obstacle regions (env_0): core obstacle and inflated safety/costmap radius.
     try:
-        num_obstacles = 30  # Easy to change (match scene_cfg.NUM_OBSTACLES)
+        num_obstacles = 12  # Easy to change (match scene_cfg.NUM_OBSTACLES)
         obstacle_names = [f"obstacle_{i}" for i in range(num_obstacles)]
         obstacle_radii = torch.linspace(0.16, 0.25, num_obstacles, device=env.device)
         inflation_radius = float(getattr(env, "obstacle_inflation_radius", 0.2))
@@ -839,11 +839,11 @@ def alive_penalty(env: ManagerBasedRLEnv) -> torch.Tensor:
     '''
     return -torch.ones(env.num_envs, device=env.device)
 
-def out_of_bounds_termination(env: ManagerBasedRLEnv, max_dist: float = 3.0) -> torch.Tensor:
+def out_of_bounds_termination(env: ManagerBasedRLEnv, max_dist: float = 2.0) -> torch.Tensor:
     '''
     @brief Compute the out-of-bounds termination condition, which is True when the robot moves too far from the current target waypoint.
     
-    max_dist=3.0 gives enough room given waypoints are spaced 1.0m apart.
+    max_dist=2.0 gives enough room given waypoints are spaced 1.0m apart.
     '''
     return torch.norm(_get_current_waypoint(env) - env.scene["robot"].data.root_pos_w[:, :2], dim=1) > max_dist
 
@@ -856,7 +856,7 @@ def obstacle_collision_termination(env: ManagerBasedRLEnv, robot_radius: float =
     robot_xy = env.scene["robot"].data.root_pos_w[:, :2]
     collision = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
 
-    num_obstacles = 30  # Easy to change (match scene_cfg.NUM_OBSTACLES)
+    num_obstacles = 12  # Easy to change (match scene_cfg.NUM_OBSTACLES)
     obstacle_names = [f"obstacle_{i}" for i in range(num_obstacles)]
     obstacle_radii = torch.linspace(0.16, 0.25, num_obstacles, device=env.device)
 
@@ -978,7 +978,7 @@ def reset_obstacles(env: ManagerBasedRLEnv, env_ids: torch.Tensor):
     - Places active obstacles near path points with lateral offsets.
     - Moves inactive obstacles far away.
     '''
-    num_obstacles = 30  # Easy to change (match scene_cfg.NUM_OBSTACLES)
+    num_obstacles = 12  # Easy to change (match scene_cfg.NUM_OBSTACLES)
     obstacle_names = [f"obstacle_{i}" for i in range(num_obstacles)]
     obstacle_radii = torch.linspace(0.16, 0.25, num_obstacles, device=env.device)
     
