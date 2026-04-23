@@ -40,13 +40,20 @@ class ObservationsCfg:
 @configclass
 class RewardsCfg:
     '''
-    @brief Reward configuration for the robot navigation task.
+    @brief Reward and penalty for the agent.
     '''
-    reward_goal_reached = RewardTermCfg(func=mdp.reward_goal_reached, weight=1.0)
-    reward_subgoal_reached = RewardTermCfg(func=mdp.reward_subgoal_reached, weight=1.0)
-    reward_success = RewardTermCfg(func=mdp.reward_success, weight=1.0)
-    reward_truncated = RewardTermCfg(func=mdp.reward_truncated, weight=1.0)
-    reward_direction_penalty = RewardTermCfg(func=mdp.reward_direction_penalty, weight=1.0)
+
+    # Rewards
+    goal_reached_reward = RewardTermCfg(func=mdp.goal_reached_reward, weight=1.0)
+    subgoal_reached_reward = RewardTermCfg(func=mdp.subgoal_reached_reward, weight=1.0)
+    success_reward = RewardTermCfg(func=mdp.success_reward, weight=1.0)
+    progress_reward = RewardTermCfg(func=mdp.progress_reward, weight=1.0)
+
+    # Penalties
+    direction_penalty = RewardTermCfg(func=mdp.direction_penalty, weight=1.0)
+    truncated_penaty = RewardTermCfg(func=mdp.truncated_penaty, weight=1.0)
+    alive_penalty = RewardTermCfg(func=mdp.alive_penalty, weight=1.0)
+    reverse_penalty = RewardTermCfg(func=mdp.reverse_penalty, weight=1.0)
 
 @configclass
 class TerminationsCfg:
@@ -79,7 +86,7 @@ class EventsCfg:
     )
 
 @configclass
-class TurtlebotNavEnvCfg(ManagerBasedRLEnvCfg):
+class ConvoyNavigationEnvCgf(ManagerBasedRLEnvCfg):
     '''
     @brief Environment configuration for a robot navigation task.
     '''
