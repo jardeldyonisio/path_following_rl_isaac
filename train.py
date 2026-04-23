@@ -7,12 +7,13 @@ import shutil
 
 from isaaclab.app import AppLauncher
 
-parser = argparse.ArgumentParser(description="Train TurtleBot3 navigation with TD3")
+parser = argparse.ArgumentParser(description="Convoy navigation.")
 parser.add_argument("--num_envs", type=int, default=1, help="Number of parallel environments.")
 parser.add_argument("--max_episodes", type=int, default=100000, help="Number of training episodes (simple env default).")
 parser.add_argument("--max_steps", type=int, default=1000, help="Max steps per episode (simple env default).")
 parser.add_argument("--seed_steps", type=int, default=2000, help="Number of warmup (random) steps before learning starts.")
 parser.add_argument("--seed", type=int, default=42, help="Seed.")
+
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 app_launcher = AppLauncher(args)
@@ -27,22 +28,17 @@ from skrl.trainers.torch import SequentialTrainer
 from skrl.utils import set_seed
 
 sys.path.insert(0, os.path.dirname(__file__))
-from env_cfg import TurtlebotNavEnvCfg
+from env_cfg import ConvoyNavigationEnvCgf
 from noise import DrQv2Noise, FixedGaussianNoise
 
 set_seed(args.seed)
 
-# --- Environment ---
-env_cfg = TurtlebotNavEnvCfg()
+env_cfg = ConvoyNavigationEnvCgf()
 env_cfg.scene.num_envs = args.num_envs
 env_cfg.seed = args.seed
 env = ManagerBasedRLEnv(cfg=env_cfg)
 env = SkrlVecEnvWrapper(env, ml_framework="torch")
 device = env.device
-
-# ---------------------------------------------------------------------------
-# STABLE MODELS (With LayerNorm and Prints)
-# ---------------------------------------------------------------------------
 
 class Actor(DeterministicMixin, Model):
     def __init__(self, observation_space, action_space, device, clip_actions=True):
@@ -51,7 +47,7 @@ class Actor(DeterministicMixin, Model):
 
         self.net = torch.nn.Sequential(
             torch.nn.Linear(observation_space.shape[0], 256),
-            torch.nn.LayerNorm(256), # THE ARMOR
+            torch.nn.LayerNorm(256),
             torch.nn.ReLU(),
             torch.nn.Linear(256, 256),
             torch.nn.ReLU(),
@@ -74,7 +70,7 @@ class Critic(DeterministicMixin, Model):
 
         self.net = torch.nn.Sequential(
             torch.nn.Linear(observation_space.shape[0] + action_space.shape[0], 256),
-            torch.nn.LayerNorm(256), # THE ARMOR
+            torch.nn.LayerNorm(256),
             torch.nn.ReLU(),
             torch.nn.Linear(256, 256),
             torch.nn.ReLU(),
@@ -91,10 +87,7 @@ class Critic(DeterministicMixin, Model):
         q_value = torch.nan_to_num(q_value, nan=0.0, posinf=1e3, neginf=-1e3)
         return q_value, {}
 
-# ---------------------------------------------------------------------------
-# Setup
-# ---------------------------------------------------------------------------
-
+# Clean up previous runs
 if os.path.exists("runs/turtlebot_nav"):
     shutil.rmtree("runs/turtlebot_nav")
 
