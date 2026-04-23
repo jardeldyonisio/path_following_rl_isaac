@@ -141,7 +141,9 @@ def _advance_to_secondary_if_closer(
             idx[e] = sec_indices[best_j]
             subgoal_reached[e] = True
 
-    env.waypoint_idx = torch.clamp(idx, 0, num_pts - 1)
+    # Allow idx to reach num_pts so past_end termination can fire.
+    # Only clamp the lower bound to 0; upper bound is num_pts (inclusive).
+    env.waypoint_idx = torch.clamp(idx, 0, num_pts)
     return subgoal_reached
 
 def _yaw_error_to_path(env: ManagerBasedRLEnv) -> torch.Tensor:
@@ -755,7 +757,7 @@ def progress_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     reward = prev_dist - current_dist
     return torch.nan_to_num(reward, nan=0.0, posinf=1.0, neginf=-1.0)
 
-def reward_goal_reached(env: ManagerBasedRLEnv) -> torch.Tensor:
+def goal_reached_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     '''
     @brief +10.0 when current main goal is reached.
     '''
@@ -770,7 +772,7 @@ def reward_goal_reached(env: ManagerBasedRLEnv) -> torch.Tensor:
 
     return reached.float() * 10.0
 
-def reward_subgoal_reached(env: ManagerBasedRLEnv) -> torch.Tensor:
+def subgoal_reached_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     '''
     @brief +5.0 when a secondary goal becomes the new main goal target.
     '''
@@ -780,14 +782,23 @@ def reward_subgoal_reached(env: ManagerBasedRLEnv) -> torch.Tensor:
     )
     return subgoal_reached.float() * 5.0
 
-def reward_success(env: ManagerBasedRLEnv) -> torch.Tensor:
+def success_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     '''
     @brief +100.0 when episode terminates by reaching all waypoints.
     '''
     terminated = all_waypoints_reached_termination(env)
     return terminated.float() * 100.0
 
-def reward_truncated(env: ManagerBasedRLEnv) -> torch.Tensor:
+def reverse_penalty(env: ManagerBasedRLEnv) -> torch.Tensor:
+    '''
+    @brief -2.0 when robot is moving backwards (negative linear velocity).
+    '''
+    robot = env.scene["robot"]
+    lin_vel = robot.data.root_lin_vel_b[:, 0]
+    penalty = lin_vel < -1e-3
+    return penalty.float() * -2.0
+
+def truncated_penaty(env: ManagerBasedRLEnv) -> torch.Tensor:
     '''
     @brief -100.0 when episode is truncated (timeout/out-of-bounds) but not successful termination.
     '''
@@ -797,9 +808,9 @@ def reward_truncated(env: ManagerBasedRLEnv) -> torch.Tensor:
     truncated_only = torch.logical_and(truncated, ~terminated)
     return truncated_only.float() * -100.0
 
-def reward_direction_penalty(env: ManagerBasedRLEnv, yaw_error_threshold: float = 0.15) -> torch.Tensor:
+def direction_penalty(env: ManagerBasedRLEnv, yaw_error_threshold: float = 0.15) -> torch.Tensor:
     '''
-    @brief -1.0 when abs(yaw_error_to_path) is above threshold.
+    @brief -1.0 when angle to the current main goal is above threshold.
     '''
     yaw_error = _yaw_error_to_path(env)
     penalty = torch.abs(yaw_error) > float(yaw_error_threshold)
@@ -862,10 +873,26 @@ def obstacle_collision_termination(env: ManagerBasedRLEnv, robot_radius: float =
 def all_waypoints_reached_termination(env: ManagerBasedRLEnv) -> torch.Tensor:
     '''
     @brief Compute the termination condition for when all waypoints have been reached.
+
+    Triggers when waypoint_idx has been advanced past the last point OR the robot
+    is within 0.2 m of the final waypoint while already tracking it.
     '''
     if not hasattr(env, 'waypoints'):
         return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
-    return env.waypoint_idx >= env.waypoints.shape[1]
+
+    num_pts = env.waypoints.shape[1]
+
+    # Primary: index advanced beyond the last waypoint
+    past_end = env.waypoint_idx >= num_pts
+
+    # Secondary: robot is physically close to the last waypoint
+    last_idx = num_pts - 1
+    robot_pos = env.scene["robot"].data.root_pos_w[:, :2]
+    last_wp = env.waypoints[torch.arange(env.num_envs, device=env.device), last_idx]
+    dist_to_last = torch.norm(last_wp - robot_pos, dim=1)
+    at_last_wp = (env.waypoint_idx >= last_idx) & (dist_to_last < 0.2)
+
+    return past_end | at_last_wp
 
 def time_out(env: ManagerBasedRLEnv) -> torch.Tensor:
     '''
