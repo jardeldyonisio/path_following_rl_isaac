@@ -3,7 +3,8 @@ import copy
 import torch
 import os
 import sys
-import shutil
+from collections import deque
+from datetime import datetime
 
 from isaaclab.app import AppLauncher
 
@@ -39,6 +40,59 @@ env_cfg.seed = args.seed
 env = ManagerBasedRLEnv(cfg=env_cfg)
 env = SkrlVecEnvWrapper(env, ml_framework="torch")
 device = env.device
+
+class EpisodeTrackerWrapper:
+    def __init__(self, env):
+        self.env = env
+        self.episode_rewards = torch.zeros(env.num_envs, device=env.device)
+        self.episode_steps = torch.zeros(env.num_envs, device=env.device)
+        self.last_10_rewards = deque(maxlen=10)
+        self.best_avg_reward = float("-inf")
+        self.agent = None
+        self.best_dir = None
+
+    def set_agent(self, agent, best_dir):
+        self.agent = agent
+        self.best_dir = best_dir
+
+    def reset(self, *args, **kwargs):
+        return self.env.reset(*args, **kwargs)
+
+    def step(self, actions):
+        obs, rewards, terminated, truncated, info = self.env.step(actions)
+
+        if torch.is_tensor(rewards):
+            rewards_flat = rewards.float().view(-1)
+            self.episode_rewards += rewards_flat
+        else:
+            try:
+                self.episode_rewards += float(rewards)
+            except (TypeError, ValueError):
+                pass
+        self.episode_steps += 1
+
+        if torch.is_tensor(terminated) or torch.is_tensor(truncated):
+            done = (terminated | truncated).view(-1)
+            if done.any():
+                done_indices = torch.nonzero(done).squeeze(-1)
+                for idx in done_indices.tolist():
+                    ep_reward = float(self.episode_rewards[idx].item())
+                    self.last_10_rewards.append(ep_reward)
+                    if self.agent is not None and self.best_dir is not None and len(self.last_10_rewards) > 0:
+                        avg_last_10 = sum(self.last_10_rewards) / len(self.last_10_rewards)
+                        self.agent.track_data("Reward / Average reward last 10 episodes", avg_last_10)
+                        if avg_last_10 >= self.best_avg_reward:
+                            self.best_avg_reward = avg_last_10
+                            best_path = os.path.join(self.best_dir, "best_avg_model.pt")
+                            print("[INFO] New best avg reward. Saving model to", best_path)
+                            self.agent.save(best_path)
+                self.episode_rewards[done] = 0.0
+                self.episode_steps[done] = 0
+
+        return obs, rewards, terminated, truncated, info
+
+    def __getattr__(self, name):
+        return getattr(self.env, name)
 
 class Actor(DeterministicMixin, Model):
     def __init__(self, observation_space, action_space, device, clip_actions=True):
@@ -87,11 +141,7 @@ class Critic(DeterministicMixin, Model):
         q_value = torch.nan_to_num(q_value, nan=0.0, posinf=1e3, neginf=-1e3)
         return q_value, {}
 
-# Clean up previous runs
-if os.path.exists("runs/turtlebot_nav"):
-    shutil.rmtree("runs/turtlebot_nav")
-
-os.makedirs("runs/turtlebot_nav/td3_final/checkpoints", exist_ok=True)
+run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 models = {
     "policy": Actor(env.observation_space, env.action_space, device),
@@ -124,8 +174,14 @@ td3_cfg["smooth_regularization_noise"] = FixedGaussianNoise(mean=0.0, std=0.2, d
 td3_cfg["smooth_regularization_clip"] = 0.5
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
-td3_cfg["experiment"]["directory"] = os.path.join(base_dir, "runs", "turtlebot_nav")
-td3_cfg["experiment"]["experiment_name"] = "td3_final"
+run_root = os.path.join(base_dir, "runs", "simple_env")
+td3_cfg["experiment"]["directory"] = run_root
+td3_cfg["experiment"]["experiment_name"] = run_timestamp
+run_dir = os.path.join(run_root, run_timestamp)
+checkpoints_dir = os.path.join(run_dir, "checkpoints")
+best_dir = os.path.join(run_dir, "best")
+os.makedirs(checkpoints_dir, exist_ok=True)
+os.makedirs(best_dir, exist_ok=True)
 
 agent = TD3(
     models=models,
@@ -135,6 +191,9 @@ agent = TD3(
     action_space=env.action_space,
     device=device,
 )
+
+env = EpisodeTrackerWrapper(env)
+env.set_agent(agent, best_dir)
 
 trainer = SequentialTrainer(cfg={"timesteps": total_timesteps}, env=env, agents=agent)
 
