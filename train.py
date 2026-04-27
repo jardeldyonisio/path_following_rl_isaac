@@ -110,6 +110,8 @@ td3_cfg["random_timesteps"] = 0
 td3_cfg["actor_learning_rate"] = 1e-4
 td3_cfg["critic_learning_rate"] = 1e-4
 td3_cfg["grad_norm_clip"] = 0.5
+td3_cfg["experiment"]["write_interval"] = 1000
+td3_cfg["experiment"]["checkpoint_interval"] = 20000
 total_timesteps = max(1, int(args.max_episodes * args.max_steps))
 td3_cfg["exploration"]["noise"] = DrQv2Noise(
     action_dim=env.action_space.shape[0],
@@ -121,12 +123,18 @@ td3_cfg["exploration"]["noise"] = DrQv2Noise(
 td3_cfg["smooth_regularization_noise"] = FixedGaussianNoise(mean=0.0, std=0.2, device=device)
 td3_cfg["smooth_regularization_clip"] = 0.5
 
-td3_cfg["experiment"]["directory"] = "runs/turtlebot_nav"
+base_dir = os.path.dirname(os.path.abspath(__file__))
+td3_cfg["experiment"]["directory"] = os.path.join(base_dir, "runs", "turtlebot_nav")
 td3_cfg["experiment"]["experiment_name"] = "td3_final"
 
-agent = TD3(models=models, memory=RandomMemory(1000000, env.num_envs, device), 
-            cfg=td3_cfg, observation_space=env.observation_space, 
-            action_space=env.action_space, device=device)
+agent = TD3(
+    models=models,
+    memory=RandomMemory(1000000, env.num_envs, device),
+    cfg=td3_cfg,
+    observation_space=env.observation_space,
+    action_space=env.action_space,
+    device=device,
+)
 
 trainer = SequentialTrainer(cfg={"timesteps": total_timesteps}, env=env, agents=agent)
 
