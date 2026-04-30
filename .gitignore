@@ -52,3 +52,16 @@ CATKIN_IGNORE
 
 # pycache
 __pycache__/
+
+# Common RL outputs
+runs/
+checkpoints/
+best/
+tensorboard/
+events.out.tfevents*
+*.pt
+*.pth
+*.ckpt
+wandb/
+mlruns/
+*.log
