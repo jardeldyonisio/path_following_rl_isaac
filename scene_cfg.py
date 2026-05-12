@@ -10,43 +10,59 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import RayCasterCfg, patterns
 from isaaclab.utils import configclass
 
-ASSETS_DIR = "/home/lognav/Jardel/path_following_rl_isaac/assets"
-PHYSICS_USD = os.path.join(ASSETS_DIR, "turtlebot3_burger_fixed", "configuration", "turtlebot3_burger_fixed_physics.usd")
-READY_USD = os.path.join(ASSETS_DIR, "turtlebot3_burger_ready.usd")
-FIXED_USD = os.path.join(ASSETS_DIR, "turtlebot3_burger_fixed", "turtlebot3_burger_fixed.usd")
+PROJECT_DIR = "/home/lognav/Jardel/path_following_rl_isaac"
+ROBOTS_DIR = os.path.join(PROJECT_DIR, "robots")
 
-# `turtlebot3_burger_ready.usd` currently contains nested articulation roots
-# (/World and /World/turtlebot3_burger), which crashes IsaacLab when spawned.
-# The physics layer USD has a single articulation root and is safe for ArticulationCfg.
-if os.path.exists(PHYSICS_USD):
-    TURTLEBOT3_USD_PATH = PHYSICS_USD
-elif os.path.exists(READY_USD):
-    TURTLEBOT3_USD_PATH = READY_USD
-else:
-    TURTLEBOT3_USD_PATH = FIXED_USD
+# Robot paths
+TURTLEBOT3_USD_PATH = os.path.join(ROBOTS_DIR, "turtlebot3_burger_fixed", "configuration", "turtlebot3_burger_fixed_physics.usd")
+GLR_USD_PATH = os.path.join(ROBOTS_DIR, "glr", "configuration", "glr_physics.usd")
+GLR_TUGGER_USD_PATH = os.path.join(ROBOTS_DIR, "glr_tugger", "configuration", "glr_tugger_physics.usd")
 
-TURTLEBOT3_CFG = ArticulationCfg(
+if not os.path.exists(TURTLEBOT3_USD_PATH):
+    raise FileNotFoundError(f"TurtleBot3 robot USD not found: {TURTLEBOT3_USD_PATH}")
+
+if not os.path.exists(GLR_USD_PATH):
+    raise FileNotFoundError(f"GLR robot USD not found: {GLR_USD_PATH}")
+
+if not os.path.exists(GLR_TUGGER_USD_PATH):
+    raise FileNotFoundError(f"GLR Tugger robot USD not found: {GLR_TUGGER_USD_PATH}")
+
+GLR_CFG = ArticulationCfg(
     prim_path="{ENV_REGEX_NS}/Robot",
     spawn=sim_utils.UsdFileCfg(
         usd_path=TURTLEBOT3_USD_PATH,
-        # NOTE:
-        # The TurtleBot USD already carries articulation metadata.
-        # Applying articulation/rigid-root modifiers at this spawn level can
-        # create nested articulation roots (e.g. /Robot and /Robot/turtlebot3_burger).
-        # Keep spawn minimal and configure articulation internals in the USD itself.
     ),
     init_state=ArticulationCfg.InitialStateCfg(
         pos=(0.0, 0.0, 1.0),
+        # rot=(0.7071068, 0.0, 0.0, 0.7071068), # GLR
+        rot=(0.0, 0.0, 0.0, 0.0), # TURTLEBOT3
         joint_pos={".*": 0.0},
     ),
     actuators={
-        "wheels": ImplicitActuatorCfg(
-            joint_names_expr=[".*wheel.*"],
-            effort_limit=400.0,   # Let the physics engine use enough torque to move the 1kg robot
-            velocity_limit=100.0, # The absolute safety limit for wheel spin
-            stiffness=0.0,        # 0.0 means we are strictly using Velocity Control, not Position
-            damping=10000.0,      # In PhysX, high damping is REQUIRED to lock in the target velocity
+        "drive_wheels": ImplicitActuatorCfg(
+            # joint_names_expr=["left_wheel_joint", "right_wheel_joint"], # GLR
+            joint_names_expr=["wheel_left_joint", "wheel_right_joint"], # TURTLEBOT3
+            effort_limit=400.0,
+            velocity_limit=2.0,
+            stiffness=0.0,
+            damping=10000.0, 
         ),
+        # "passive_wheels": ImplicitActuatorCfg(
+        #     # Pega todas as rodas direcionais/rolagem do reboque ("eixo...") e casters do rebocador
+        #     joint_names_expr=["eixo.*", ".*caster.*"], 
+        #     effort_limit=0.0,
+        #     velocity_limit=0.0,
+        #     stiffness=0.0, # Zero rigidez = solto
+        #     damping=0.0,   # Zero resistência = rola livremente
+        # ),
+        # "cambao_joints": ImplicitActuatorCfg(
+        #     # Pega as duas juntas do cambão
+        #     joint_names_expr=[".*cambao.*"],
+        #     effort_limit=0.0,
+        #     velocity_limit=0.0,
+        #     stiffness=0.0,
+        #     damping=1000.0, # Damping para estabilizar a articulação e não dobrar como papel
+        # ),
     },
 )
 
@@ -54,7 +70,12 @@ TURTLEBOT3_CFG = ArticulationCfg(
 class NavSceneCfg(InteractiveSceneCfg):
     ground = AssetBaseCfg(
         prim_path="/World/GroundPlane",
-        spawn=sim_utils.GroundPlaneCfg(),
+        spawn=sim_utils.GroundPlaneCfg(
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                static_friction=2.0,
+                dynamic_friction=2.0,
+            )
+        ),
     )
 
     light = AssetBaseCfg(
@@ -65,13 +86,17 @@ class NavSceneCfg(InteractiveSceneCfg):
         ),
     )
 
-    robot: ArticulationCfg = TURTLEBOT3_CFG
+    robot: ArticulationCfg = GLR_CFG
 
     # 2D LiDAR (defaults to 180°, can be changed in env_cfg.__post_init__)
     lidar: RayCasterCfg = RayCasterCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/base_footprint/base_link/base_scan",
+        # prim_path="{ENV_REGEX_NS}/Robot/base_link/chassibigga/lidar_link", # GLR
+        prim_path="{ENV_REGEX_NS}/Robot/base_footprint/base_link/base_scan", # TURTLEBOT
         update_period=0.0,
-        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 0.0)),
+        offset=RayCasterCfg.OffsetCfg(
+            pos=(0.0, 0.0, 0.0), 
+            rot=(0.7071068, 0.0, 0.0, 0.7071068)
+        ),
         ray_alignment="yaw",
         pattern_cfg=patterns.LidarPatternCfg(
             channels=1,

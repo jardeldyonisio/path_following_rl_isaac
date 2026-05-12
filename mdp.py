@@ -252,7 +252,7 @@ def _analytic_lidar_for_env(
     '''
     @brief Analytic LiDAR fallback using ray-circle intersection against obstacle objects.
     '''
-    # Anchor fallback rays to LiDAR frame (base_scan) to match mounted sensor location.
+    # Anchor fallback rays to the mounted LiDAR frame.
     lidar = env.scene["lidar"]
     sensor_pos = lidar.data.pos_w[env_id]
     sensor_xy = sensor_pos[:2]
@@ -574,14 +574,29 @@ def lidar_observation(env: ManagerBasedRLEnv) -> torch.Tensor:
 
     return norm
 
+def _find_joint_index(asset, candidate_names: tuple[str, ...]) -> int:
+    '''
+    @brief Resolve the first joint name that exists on the articulation.
+    '''
+    for joint_name in candidate_names:
+        try:
+            joint_ids = asset.find_joints(joint_name)[0]
+        except ValueError:
+            continue
+
+        if len(joint_ids) > 0:
+            return int(joint_ids[0])
+
+    raise ValueError(f"Unable to find a matching joint from: {candidate_names}")
+
 class DifferentialDriveAction(ActionTerm):
     cfg: DifferentialDriveActionCfg
 
     def __init__(self, cfg: DifferentialDriveActionCfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
         self._asset = env.scene[cfg.asset_name]
-        self._left_idx = self._asset.find_joints(cfg.left_joint_name)[0][0]
-        self._right_idx = self._asset.find_joints(cfg.right_joint_name)[0][0]
+        self._left_idx = _find_joint_index(self._asset, (cfg.left_joint_name, "wheel_left_joint", "left_wheel"))
+        self._right_idx = _find_joint_index(self._asset, (cfg.right_joint_name, "wheel_right_joint", "right_wheel", "righ"))
         
         self._joint_ids = [self._left_idx, self._right_idx]
         self._r = cfg.wheel_radius
@@ -628,10 +643,19 @@ class DifferentialDriveAction(ActionTerm):
 class DifferentialDriveActionCfg(ActionTermCfg):
     class_type: type = DifferentialDriveAction
     asset_name: str = "robot"
-    left_joint_name: str = "wheel_left_joint"
+
+    # GLR
+    # left_joint_name: str = "left_wheel_joint" 
+    # right_joint_name: str = "right_wheel_joint"
+    # wheel_radius: float = 0.1
+    # wheel_base: float = 0.5
+
+    # TURTLEBOT3
+    left_joint_name: str = "wheel_left_joint" 
     right_joint_name: str = "wheel_right_joint"
     wheel_radius: float = 0.033
-    wheel_base: float = 0.160
+    wheel_base: float = 0.16
+
     linear_vel_scale: float = 0.22  
     angular_vel_scale: float = 2.84 
 
@@ -916,7 +940,8 @@ def reset_robot_pose(env: ManagerBasedRLEnv, env_ids: torch.Tensor):
     
     root_state[:, 0:2] = start_pos
     root_state[:, 2] = env.scene.env_origins[env_ids, 2] + 0.02 
-    root_state[:, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=env.device)
+    # root_state[:, 3:7] = torch.tensor([0.7071068, 0.0, 0.0, 0.7071068], device=env.device) # GLR 
+    root_state[:, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=env.device) # TURTLEBOT
     root_state[:, 7:13] = 0.0 
     
     robot.write_root_state_to_sim(root_state, env_ids=env_ids)
