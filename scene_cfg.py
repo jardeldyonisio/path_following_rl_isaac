@@ -27,7 +27,7 @@ if not os.path.exists(GLR_USD_PATH):
 if not os.path.exists(GLR_TUGGER_USD_PATH):
     raise FileNotFoundError(f"GLR Tugger robot USD not found: {GLR_TUGGER_USD_PATH}")
 
-GLR_CFG = ArticulationCfg(
+ROBOT_CFG = ArticulationCfg(
     prim_path="{ENV_REGEX_NS}/Robot",
     spawn=sim_utils.UsdFileCfg(
         usd_path=TURTLEBOT3_USD_PATH,
@@ -43,7 +43,7 @@ GLR_CFG = ArticulationCfg(
             # joint_names_expr=["left_wheel_joint", "right_wheel_joint"], # GLR
             joint_names_expr=["wheel_left_joint", "wheel_right_joint"], # TURTLEBOT3
             effort_limit=400.0,
-            velocity_limit=2.0,
+            velocity_limit=15.0, # rad/s, not m/s, since the action will be wheel angular velocity
             stiffness=0.0,
             damping=10000.0, 
         ),
@@ -86,7 +86,7 @@ class NavSceneCfg(InteractiveSceneCfg):
         ),
     )
 
-    robot: ArticulationCfg = GLR_CFG
+    robot: ArticulationCfg = ROBOT_CFG
 
     # 2D LiDAR (defaults to 180°, can be changed in env_cfg.__post_init__)
     lidar: RayCasterCfg = RayCasterCfg(
