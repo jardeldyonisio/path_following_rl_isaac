@@ -14,6 +14,7 @@ parser.add_argument("--max_episodes", type=int, default=100000, help="Number of 
 parser.add_argument("--max_steps", type=int, default=1000, help="Max steps per episode (simple env default).")
 parser.add_argument("--seed_steps", type=int, default=2000, help="Number of warmup (random) steps before learning starts.")
 parser.add_argument("--seed", type=int, default=42, help="Seed.")
+parser.add_argument("--robot", type=str, default="turtlebot3", choices=["turtlebot3", "glr", "glr_tugger"], help="Robot to use in the simulation.")
 
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -34,7 +35,7 @@ from noise import DrQv2Noise, FixedGaussianNoise
 
 set_seed(args.seed)
 
-env_cfg = ConvoyNavigationEnvCgf()
+env_cfg = ConvoyNavigationEnvCgf(robot=args.robot)
 env_cfg.scene.num_envs = args.num_envs
 env_cfg.seed = args.seed
 env = ManagerBasedRLEnv(cfg=env_cfg)
