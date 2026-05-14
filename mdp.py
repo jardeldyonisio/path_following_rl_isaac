@@ -653,12 +653,16 @@ class DifferentialDriveAction(ActionTerm):
         @param actions: A tensor of shape (num_envs, 2) where actions[:, 0] is the linear velocity command and actions[:, 1]
         is the angular velocity command, both normalized to [-1, 1].
         '''
+
+        #TODO: Implement the previous action.
         
         self._raw_actions = actions.clone()
+
+        # TODO: Verify if it's really necessary
         actions = torch.clamp(actions, -1.0, 1.0)
         linear_velocity = self._min_lin + (self._max_lin - self._min_lin) * ((actions[:, 0] + 1.0) * 0.5)
         angular_velocity = self._min_ang + (self._max_ang - self._min_ang) * ((actions[:, 1] + 1.0) * 0.5)
-        print(f"[ACTION] Linear cmd: {linear_velocity.cpu().numpy()}, Angular cmd: {angular_velocity.cpu().numpy()}")
+
         v_left  = (linear_velocity - angular_velocity * self._L / 2.0) / self._r
         v_right = (linear_velocity + angular_velocity * self._L / 2.0) / self._r
         self._processed_actions = torch.stack([v_left, v_right], dim=1)
@@ -883,7 +887,7 @@ def reverse_penalty(env: ManagerBasedRLEnv) -> torch.Tensor:
     penalty = lin_vel < -1e-3
     return penalty.float() * -2.0
 
-def truncated_penaty(env: ManagerBasedRLEnv) -> torch.Tensor:
+def truncated_penalty(env: ManagerBasedRLEnv) -> torch.Tensor:
     '''
     @brief -100.0 when episode is truncated (timeout/out-of-bounds) but not successful termination.
     '''
@@ -926,7 +930,14 @@ def obstacle_collision_termination(env: ManagerBasedRLEnv, robot_radius: float =
     A collision occurs when the 2D center distance is less than the sum of radii.
     '''
     robot_xy = env.scene["robot"].data.root_pos_w[:, :2]
-    robot_radius = float(getattr(env, "robot_radius", robot_radius))
+    # Prefer the robot radius defined on the environment config (`env.cfg`),
+    # then fall back to an env-level attribute, then the function default.
+    if hasattr(env, "cfg") and hasattr(env.cfg, "robot_radius"):
+        robot_radius_val = float(env.cfg.robot_radius)
+    elif hasattr(env, "robot_radius"):
+        robot_radius_val = float(env.robot_radius)
+    else:
+        robot_radius_val = float(robot_radius)
     collision = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
 
     obstacle_names = [f"obstacle_{i}" for i in range(5)]
@@ -940,7 +951,7 @@ def obstacle_collision_termination(env: ManagerBasedRLEnv, robot_radius: float =
 
         obs_r = float(obstacle_radii[i]) if i < len(obstacle_radii) else float(obstacle_radii[-1])
         dist = torch.norm(robot_xy - obs_xy, dim=1)
-        collision = torch.logical_or(collision, dist < (float(robot_radius) + obs_r))
+        collision = torch.logical_or(collision, dist < (robot_radius_val + obs_r))
 
     return collision
 
