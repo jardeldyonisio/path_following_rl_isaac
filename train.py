@@ -1,20 +1,42 @@
 import argparse
 import copy
 import torch
+import numpy as np
 import os
 import sys
+import gymnasium as gym
 from collections import deque
 from datetime import datetime
 
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="Convoy navigation.")
-parser.add_argument("--num_envs", type=int, default=1, help="Number of parallel environments.")
-parser.add_argument("--max_episodes", type=int, default=100000, help="Number of training episodes (simple env default).")
-parser.add_argument("--max_steps", type=int, default=1000, help="Max steps per episode (simple env default).")
-parser.add_argument("--seed_steps", type=int, default=2000, help="Number of warmup (random) steps before learning starts.")
-parser.add_argument("--seed", type=int, default=42, help="Seed.")
-parser.add_argument("--robot", type=str, default="turtlebot3", choices=["turtlebot3", "glr", "glr_tugger"], help="Robot to use in the simulation.")
+parser.add_argument("--num_envs", 
+                    type=int, 
+                    default=1, 
+                    help="Number of parallel environments.")
+
+parser.add_argument("--max_episodes", 
+                    type=int, 
+                    default=100000, help="Number of training episodes (simple env default).")
+
+parser.add_argument("--max_steps", 
+                    type=int, 
+                    default=1000, help="Max steps per episode (simple env default).")
+
+parser.add_argument("--seed_steps", 
+                    type=int, 
+                    default=2000, help="Number of warmup (random) steps before learning starts.")
+
+parser.add_argument("--seed", 
+                    type=int, 
+                    default=42, help="Seed.")
+
+parser.add_argument("--robot", 
+                    type=str, 
+                    default="turtlebot3", 
+                    choices=["turtlebot3", "glr", "glr_tugger"], 
+                    help="Robot to use in the simulation.")
 
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -35,11 +57,25 @@ from noise import DrQv2Noise, FixedGaussianNoise
 
 set_seed(args.seed)
 
+
+class ActionSpaceOverrideWrapper:
+    def __init__(self, env, action_space):
+        self.env = env
+        self.action_space = action_space
+
+    def __getattr__(self, name):
+        return getattr(self.env, name)
+
 env_cfg = ConvoyNavigationEnvCgf(robot=args.robot)
 env_cfg.scene.num_envs = args.num_envs
 env_cfg.seed = args.seed
 env = ManagerBasedRLEnv(cfg=env_cfg)
 env = SkrlVecEnvWrapper(env, ml_framework="torch")
+# Ensure random warmup uses bounded actions to avoid NaNs.
+env = ActionSpaceOverrideWrapper(
+    env,
+    gym.spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32),
+)
 device = env.device
 
 class EpisodeTrackerWrapper:
@@ -51,6 +87,8 @@ class EpisodeTrackerWrapper:
         self.best_avg_reward = float("-inf")
         self.agent = None
         self.best_dir = None
+        self.total_steps = 0
+        self.warmup_finished = False
 
     def set_agent(self, agent, best_dir):
         self.agent = agent
@@ -61,6 +99,20 @@ class EpisodeTrackerWrapper:
 
     def step(self, actions):
         obs, rewards, terminated, truncated, info = self.env.step(actions)
+
+        # Log warmup phase: if agent exists and total_steps < seed_steps, we're in warmup
+        if self.agent is not None and self.total_steps < args.seed_steps:
+            if self.total_steps == 0:
+                print(f"[INFO] Entering warmup phase: {args.seed_steps} random steps")
+            # Sample action to show diversity during warmup
+            sample_action = actions[0].detach().cpu().numpy() if torch.is_tensor(actions) else actions[0]
+            if self.total_steps % 100 == 0:  # Log every 100 steps to avoid spam
+                print(f"[WARMUP] Step {self.total_steps}/{args.seed_steps} | Sample action: {sample_action}")
+        elif self.agent is not None and not self.warmup_finished:
+            print(f"[INFO] Warmup complete! Policy learning begins at step {self.total_steps}")
+            self.warmup_finished = True
+
+        self.total_steps += 1
 
         if torch.is_tensor(rewards):
             rewards_flat = rewards.float().view(-1)
@@ -157,7 +209,7 @@ td3_cfg = copy.deepcopy(TD3_DEFAULT_CONFIG)
 # IsaacLab manager env exposes Box(-inf, inf) action space by default.
 # skrl random warmup samples from env.action_space and can yield NaNs.
 # Start directly from policy actions (already bounded by tanh) instead.
-td3_cfg["random_timesteps"] = 0
+td3_cfg["random_timesteps"] = int(args.seed_steps)
 td3_cfg["actor_learning_rate"] = 1e-4
 td3_cfg["critic_learning_rate"] = 1e-4
 td3_cfg["grad_norm_clip"] = 0.5
