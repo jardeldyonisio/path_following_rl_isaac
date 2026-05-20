@@ -11,9 +11,66 @@ from isaaclab.managers import (
     TerminationTermCfg,
     EventTermCfg,
 )
-from scene_cfg import NavSceneCfg
+from scene_cfg import (
+    NavSceneCfg,
+    TURTLEBOT3_USD_PATH,
+    GLR_USD_PATH,
+    GLR_TUGGER_USD_PATH,
+)
 from isaaclab.utils import configclass
 from isaaclab.envs import ManagerBasedRLEnvCfg
+
+
+ROBOT_PROFILES = {
+    "turtlebot3": {
+        "usd_path": TURTLEBOT3_USD_PATH,
+        "lidar_prim_path": "{ENV_REGEX_NS}/Robot/base_footprint/base_link/base_scan",
+        "left_joint_name": "wheel_left_joint",
+        "right_joint_name": "wheel_right_joint",
+        "wheel_radius": 0.033,
+        "wheel_base": 0.16,
+        "reset_quat": (1.0, 0.0, 0.0, 0.0),
+        "robot_radius": 0.105,
+        "linear_vel_scale": 0.22,
+        "angular_vel_scale": 2.84,
+        "min_linear_velocity": -0.22,
+        "max_linear_velocity": 0.22,
+        "min_angular_velocity": -2.84,
+        "max_angular_velocity": 2.84,
+    },
+    "glr": {
+        "usd_path": GLR_USD_PATH,
+        "lidar_prim_path": "{ENV_REGEX_NS}/Robot/base_link/chassibigga/lidar_link",
+        "left_joint_name": "left_wheel_joint",
+        "right_joint_name": "right_wheel_joint",
+        "wheel_radius": 0.1,
+        "wheel_base": 0.5,
+        "reset_quat": (0.7071068, 0.0, 0.0, 0.7071068),
+        "robot_radius": 0.4,
+        "linear_vel_scale": 1.0,
+        "angular_vel_scale": 0.5,
+        "min_linear_velocity": -1.0,
+        "max_linear_velocity": 1.0,
+        "min_angular_velocity": -0.5,
+        "max_angular_velocity": 0.5,
+    },
+    "glr_tugger": {
+        "usd_path": GLR_TUGGER_USD_PATH,
+        "lidar_prim_path": "{ENV_REGEX_NS}/Robot/base_link/chassibigga/lidar_link",
+        "left_joint_name": "left_wheel_joint",
+        "right_joint_name": "right_wheel_joint",
+        "wheel_radius": 0.1,
+        "wheel_base": 0.5,
+        "reset_quat": (0.7071068, 0.0, 0.0, 0.7071068),
+        "robot_radius": 0.4,
+        "linear_vel_scale": 1.0,
+        "angular_vel_scale": 0.5,
+        "min_linear_velocity": -0.2,
+        "max_linear_velocity": 1.0,
+        "min_angular_velocity": -0.5,
+        "max_angular_velocity": 0.5,
+    },
+}
 
 @configclass
 class ActionsCfg:
@@ -50,10 +107,11 @@ class RewardsCfg:
     progress_reward = RewardTermCfg(func=mdp.progress_reward, weight=1.0)
 
     # Penalties
+    # angular_velocity_penalty = RewardTermCfg(func=mdp.angular_velocity_penalty, weight=1.0)
     direction_penalty = RewardTermCfg(func=mdp.direction_penalty, weight=1.0)
-    truncated_penaty = RewardTermCfg(func=mdp.truncated_penaty, weight=1.0)
-    alive_penalty = RewardTermCfg(func=mdp.alive_penalty, weight=1.0)
-    reverse_penalty = RewardTermCfg(func=mdp.reverse_penalty, weight=1.0)
+    truncated_penalty = RewardTermCfg(func=mdp.truncated_penalty, weight=1.0)
+    # alive_penalty = RewardTermCfg(func=mdp.alive_penalty, weight=1.0)
+    # reverse_penalty = RewardTermCfg(func=mdp.reverse_penalty, weight=1.0)
 
 @configclass
 class TerminationsCfg:
@@ -90,6 +148,8 @@ class ConvoyNavigationEnvCgf(ManagerBasedRLEnvCfg):
     '''
     @brief Environment configuration for a robot navigation task.
     '''
+
+    robot: str = "turtlebot3"
     
     # Scene settings 
     scene: NavSceneCfg = NavSceneCfg(num_envs=1, env_spacing=4.0)
@@ -102,7 +162,7 @@ class ConvoyNavigationEnvCgf(ManagerBasedRLEnvCfg):
     events: EventsCfg = EventsCfg()
     
     # Episode settings
-    episode_length_s: float = 1000.0
+    episode_length_s: float = 100.0
     decimation: int = 4
 
     # LiDAR settings
@@ -113,6 +173,56 @@ class ConvoyNavigationEnvCgf(ManagerBasedRLEnvCfg):
     
     def __post_init__(self):
         super().__post_init__()
+
+        if self.robot not in ROBOT_PROFILES:
+            raise ValueError(f"Unsupported robot '{self.robot}'. Expected one of: {sorted(ROBOT_PROFILES)}")
+
+        robot_profile = ROBOT_PROFILES[self.robot]
+        self.robot_name = self.robot
+
+        self.scene.robot.spawn.usd_path = robot_profile["usd_path"]
+        self.scene.robot.init_state.rot = robot_profile["reset_quat"]
+        self.scene.robot.actuators["drive_wheels"].joint_names_expr = [
+            robot_profile["left_joint_name"],
+            robot_profile["right_joint_name"],
+        ]
+        self.scene.lidar.prim_path = robot_profile["lidar_prim_path"]
+
+        self.actions.robot_vel.left_joint_name = robot_profile["left_joint_name"]
+        self.actions.robot_vel.right_joint_name = robot_profile["right_joint_name"]
+        self.actions.robot_vel.wheel_radius = robot_profile["wheel_radius"]
+        self.actions.robot_vel.wheel_base = robot_profile["wheel_base"]
+        linear_min = robot_profile.get("min_linear_velocity")
+        if linear_min is None:
+            linear_min = -robot_profile["linear_vel_scale"]
+        linear_max = robot_profile.get("max_linear_velocity")
+        if linear_max is None:
+            linear_max = robot_profile["linear_vel_scale"]
+
+        angular_min = robot_profile.get("min_angular_velocity")
+        if angular_min is None:
+            angular_min = -robot_profile["angular_vel_scale"]
+        angular_max = robot_profile.get("max_angular_velocity")
+        if angular_max is None:
+            angular_max = robot_profile["angular_vel_scale"]
+
+        self.actions.robot_vel.min_linear_velocity = float(linear_min)
+        self.actions.robot_vel.max_linear_velocity = float(linear_max)
+        self.actions.robot_vel.min_angular_velocity = float(angular_min)
+        self.actions.robot_vel.max_angular_velocity = float(angular_max)
+
+        self.actions.robot_vel.linear_vel_scale = max(abs(float(linear_min)), abs(float(linear_max)))
+        self.actions.robot_vel.angular_vel_scale = max(abs(float(angular_min)), abs(float(angular_max)))
+
+        self.min_linear_velocity = float(linear_min)
+        self.max_linear_velocity = float(linear_max)
+        self.min_angular_velocity = float(angular_min)
+        self.max_angular_velocity = float(angular_max)
+
+        self.linear_vel_scale = self.actions.robot_vel.linear_vel_scale
+        self.angular_vel_scale = self.actions.robot_vel.angular_vel_scale
+        self.robot_radius = robot_profile["robot_radius"]
+        self._robot_reset_quat = robot_profile["reset_quat"]
 
         # Apply LiDAR settings to scene sensor config
         half_fov = 0.5 * float(self.lidar_fov_deg)

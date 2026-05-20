@@ -252,7 +252,7 @@ def _analytic_lidar_for_env(
     '''
     @brief Analytic LiDAR fallback using ray-circle intersection against obstacle objects.
     '''
-    # Anchor fallback rays to LiDAR frame (base_scan) to match mounted sensor location.
+    # Anchor fallback rays to the mounted LiDAR frame.
     lidar = env.scene["lidar"]
     sensor_pos = lidar.data.pos_w[env_id]
     sensor_xy = sensor_pos[:2]
@@ -574,20 +574,63 @@ def lidar_observation(env: ManagerBasedRLEnv) -> torch.Tensor:
 
     return norm
 
+def _find_joint_index(asset, candidate_names: tuple[str, ...]) -> int:
+    '''
+    @brief Resolve the first joint name that exists on the articulation.
+    '''
+    for joint_name in candidate_names:
+        try:
+            joint_ids = asset.find_joints(joint_name)[0]
+        except ValueError:
+            continue
+
+        if len(joint_ids) > 0:
+            return int(joint_ids[0])
+
+    raise ValueError(f"Unable to find a matching joint from: {candidate_names}")
+
 class DifferentialDriveAction(ActionTerm):
     cfg: DifferentialDriveActionCfg
 
     def __init__(self, cfg: DifferentialDriveActionCfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
         self._asset = env.scene[cfg.asset_name]
-        self._left_idx = self._asset.find_joints(cfg.left_joint_name)[0][0]
-        self._right_idx = self._asset.find_joints(cfg.right_joint_name)[0][0]
-        
+        left_cands = tuple(n for n in (cfg.left_joint_name, "wheel_left_joint", "left_wheel") if n)
+        right_cands = tuple(n for n in (cfg.right_joint_name, "wheel_right_joint", "right_wheel", "righ") if n)
+
+        self._left_idx = _find_joint_index(self._asset, left_cands)
+        self._right_idx = _find_joint_index(self._asset, right_cands)
+
         self._joint_ids = [self._left_idx, self._right_idx]
-        self._r = cfg.wheel_radius
-        self._L = cfg.wheel_base
-        self._lin_scale = cfg.linear_vel_scale
-        self._ang_scale = cfg.angular_vel_scale
+
+        # Prefer explicit cfg values; fall back to env-level profile or sensible defaults.
+        self._r = float(cfg.wheel_radius) if cfg.wheel_radius is not None else float(getattr(env, "wheel_radius", 0.1))
+        self._L = float(cfg.wheel_base) if cfg.wheel_base is not None else float(getattr(env, "wheel_base", 0.5))
+        lin_scale = float(cfg.linear_vel_scale) if cfg.linear_vel_scale is not None else float(getattr(env, "linear_vel_scale", 1.0))
+        ang_scale = float(cfg.angular_vel_scale) if cfg.angular_vel_scale is not None else float(getattr(env, "angular_vel_scale", 0.8))
+
+        env_min_lin = getattr(env, "min_linear_velocity", None)
+        env_max_lin = getattr(env, "max_linear_velocity", None)
+        env_min_ang = getattr(env, "min_angular_velocity", None)
+        env_max_ang = getattr(env, "max_angular_velocity", None)
+
+        self._min_lin = float(cfg.min_linear_velocity) if cfg.min_linear_velocity is not None else (
+            float(env_min_lin) if env_min_lin is not None else -lin_scale
+        )
+        self._max_lin = float(cfg.max_linear_velocity) if cfg.max_linear_velocity is not None else (
+            float(env_max_lin) if env_max_lin is not None else lin_scale
+        )
+        self._min_ang = float(cfg.min_angular_velocity) if cfg.min_angular_velocity is not None else (
+            float(env_min_ang) if env_min_ang is not None else -ang_scale
+        )
+        self._max_ang = float(cfg.max_angular_velocity) if cfg.max_angular_velocity is not None else (
+            float(env_max_ang) if env_max_ang is not None else ang_scale
+        )
+
+        if self._min_lin > self._max_lin:
+            self._min_lin, self._max_lin = self._max_lin, self._min_lin
+        if self._min_ang > self._max_ang:
+            self._min_ang, self._max_ang = self._max_ang, self._min_ang
 
     @property
     def action_dim(self) -> int: return 2
@@ -610,12 +653,18 @@ class DifferentialDriveAction(ActionTerm):
         @param actions: A tensor of shape (num_envs, 2) where actions[:, 0] is the linear velocity command and actions[:, 1]
         is the angular velocity command, both normalized to [-1, 1].
         '''
+
+        #TODO: Implement the previous action.
         
         self._raw_actions = actions.clone()
-        v = actions[:, 0] * self._lin_scale
-        w = actions[:, 1] * self._ang_scale
-        v_left  = (v - w * self._L / 2.0) / self._r
-        v_right = (v + w * self._L / 2.0) / self._r
+
+        # TODO: Verify if it's really necessary
+        actions = torch.clamp(actions, -1.0, 1.0)
+        linear_velocity = self._min_lin + (self._max_lin - self._min_lin) * ((actions[:, 0] + 1.0) * 0.5)
+        angular_velocity = self._min_ang + (self._max_ang - self._min_ang) * ((actions[:, 1] + 1.0) * 0.5)
+
+        v_left  = (linear_velocity - angular_velocity * self._L / 2.0) / self._r
+        v_right = (linear_velocity + angular_velocity * self._L / 2.0) / self._r
         self._processed_actions = torch.stack([v_left, v_right], dim=1)
 
     def apply_actions(self):
@@ -628,12 +677,26 @@ class DifferentialDriveAction(ActionTerm):
 class DifferentialDriveActionCfg(ActionTermCfg):
     class_type: type = DifferentialDriveAction
     asset_name: str = "robot"
-    left_joint_name: str = "wheel_left_joint"
-    right_joint_name: str = "wheel_right_joint"
-    wheel_radius: float = 0.033
-    wheel_base: float = 0.160
-    linear_vel_scale: float = 0.22  
-    angular_vel_scale: float = 2.84 
+
+    # Get the values from the actual robot model, or use the TurtleBot3 defaults as a fallback.
+    left_joint_name: str | None = None
+    right_joint_name: str | None = None
+    wheel_radius: float | None = None
+    wheel_base: float | None = None
+    linear_vel_scale: float | None = None
+    angular_vel_scale: float | None = None
+    min_linear_velocity: float | None = None
+    max_linear_velocity: float | None = None
+    min_angular_velocity: float | None = None
+    max_angular_velocity: float | None = None
+
+    # TURTLEBOT3
+    # left_joint_name: str = "wheel_left_joint" 
+    # right_joint_name: str = "wheel_right_joint"
+    # wheel_radius: float = 0.033
+    # wheel_base: float = 0.16
+    # linear_vel_scale: float = 0.22  
+    # angular_vel_scale: float = 2.84 
 
 def goal_observation(env: ManagerBasedRLEnv, lookahead: int = 1) -> torch.Tensor:
     '''
@@ -737,9 +800,24 @@ def velocity_observation(env: ManagerBasedRLEnv) -> torch.Tensor:
     robot = env.scene["robot"]
     lin_vel = robot.data.root_lin_vel_b[:, 0]
     ang_vel = robot.data.root_ang_vel_b[:, 2]
-    
-    lin_norm = torch.clamp(lin_vel / 0.22, -1.0, 1.0)
-    ang_norm = torch.clamp(ang_vel / 2.84, -1.0, 1.0)
+
+    lin_min = getattr(env, "min_linear_velocity", None)
+    lin_max = getattr(env, "max_linear_velocity", None)
+    ang_min = getattr(env, "min_angular_velocity", None)
+    ang_max = getattr(env, "max_angular_velocity", None)
+
+    if lin_min is not None and lin_max is not None:
+        lin_scale = max(1e-6, float(max(abs(lin_min), abs(lin_max))))
+    else:
+        lin_scale = float(getattr(env, "linear_vel_scale", 0.22))
+
+    if ang_min is not None and ang_max is not None:
+        ang_scale = max(1e-6, float(max(abs(ang_min), abs(ang_max))))
+    else:
+        ang_scale = float(getattr(env, "angular_vel_scale", 2.84))
+
+    lin_norm = torch.clamp(lin_vel / lin_scale, -1.0, 1.0)
+    ang_norm = torch.clamp(ang_vel / ang_scale, -1.0, 1.0)
     
     obs = torch.stack([lin_norm, ang_norm], dim=1)
     return torch.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
@@ -757,14 +835,15 @@ def progress_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     reward = prev_dist - current_dist
     return torch.nan_to_num(reward, nan=0.0, posinf=1.0, neginf=-1.0)
 
-def goal_reached_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
+def goal_reached_reward(env: ManagerBasedRLEnv, 
+                        distance_threshold: float = 0.55) -> torch.Tensor:
     '''
     @brief +10.0 when current main goal is reached.
     '''
     robot_pos = env.scene["robot"].data.root_pos_w[:, :2]
     goals = _get_current_waypoint(env)
     main_dist = torch.norm(goals - robot_pos, dim=1)
-    reached = main_dist < 0.2
+    reached = main_dist < distance_threshold
 
     subgoal_reached = _advance_to_secondary_if_closer(env, robot_pos, main_dist, reached)
     env.extras["is_goal_reached"] = reached.clone()
@@ -789,6 +868,16 @@ def success_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     terminated = all_waypoints_reached_termination(env)
     return terminated.float() * 100.0
 
+def angular_velocity_penalty(env: ManagerBasedRLEnv) -> torch.Tensor:
+    '''
+    @brief -1.0 * (angular velocity)^2 to encourage smoother, less erratic turns.
+    '''
+    robot = env.scene["robot"]
+    ang_vel = robot.data.root_ang_vel_b[:, 2]
+    penalty = torch.square(ang_vel)
+
+    return penalty.float() * -1.0
+
 def reverse_penalty(env: ManagerBasedRLEnv) -> torch.Tensor:
     '''
     @brief -2.0 when robot is moving backwards (negative linear velocity).
@@ -798,7 +887,7 @@ def reverse_penalty(env: ManagerBasedRLEnv) -> torch.Tensor:
     penalty = lin_vel < -1e-3
     return penalty.float() * -2.0
 
-def truncated_penaty(env: ManagerBasedRLEnv) -> torch.Tensor:
+def truncated_penalty(env: ManagerBasedRLEnv) -> torch.Tensor:
     '''
     @brief -100.0 when episode is truncated (timeout/out-of-bounds) but not successful termination.
     '''
@@ -815,18 +904,6 @@ def direction_penalty(env: ManagerBasedRLEnv, yaw_error_threshold: float = 0.15)
     yaw_error = _yaw_error_to_path(env)
     penalty = torch.abs(yaw_error) > float(yaw_error_threshold)
     return penalty.float() * -1.0
-
-def waypoint_reached_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
-    '''
-    @brief Compute the waypoint reached reward, which gives a positive reward when the robot is within a 
-    certain distance of the current target waypoint.
-    '''
-    robot_pos = env.scene["robot"].data.root_pos_w[:, :2]
-    goals = _get_current_waypoint(env)
-    main_dist = torch.norm(goals - robot_pos, dim=1)
-    reached = main_dist < 0.2
-    _ = _advance_to_secondary_if_closer(env, robot_pos, main_dist, reached)
-    return reached.float()
 
 def out_of_bounds_penalty(env: ManagerBasedRLEnv, max_dist: float = 2.0) -> torch.Tensor:
     '''
@@ -853,6 +930,14 @@ def obstacle_collision_termination(env: ManagerBasedRLEnv, robot_radius: float =
     A collision occurs when the 2D center distance is less than the sum of radii.
     '''
     robot_xy = env.scene["robot"].data.root_pos_w[:, :2]
+    # Prefer the robot radius defined on the environment config (`env.cfg`),
+    # then fall back to an env-level attribute, then the function default.
+    if hasattr(env, "cfg") and hasattr(env.cfg, "robot_radius"):
+        robot_radius_val = float(env.cfg.robot_radius)
+    elif hasattr(env, "robot_radius"):
+        robot_radius_val = float(env.robot_radius)
+    else:
+        robot_radius_val = float(robot_radius)
     collision = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
 
     obstacle_names = [f"obstacle_{i}" for i in range(5)]
@@ -866,7 +951,7 @@ def obstacle_collision_termination(env: ManagerBasedRLEnv, robot_radius: float =
 
         obs_r = float(obstacle_radii[i]) if i < len(obstacle_radii) else float(obstacle_radii[-1])
         dist = torch.norm(robot_xy - obs_xy, dim=1)
-        collision = torch.logical_or(collision, dist < (float(robot_radius) + obs_r))
+        collision = torch.logical_or(collision, dist < (robot_radius_val + obs_r))
 
     return collision
 
@@ -916,7 +1001,13 @@ def reset_robot_pose(env: ManagerBasedRLEnv, env_ids: torch.Tensor):
     
     root_state[:, 0:2] = start_pos
     root_state[:, 2] = env.scene.env_origins[env_ids, 2] + 0.02 
-    root_state[:, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=env.device)
+    # TODO: Fix the following code to really get the robot reset based on the defined robot model
+    reset_quat = torch.tensor(
+        getattr(env, "_robot_reset_quat", (0.7071068, 0.0, 0.0, 0.7071068)),
+        device=env.device,
+        dtype=root_state.dtype,
+    )
+    root_state[:, 3:7] = reset_quat
     root_state[:, 7:13] = 0.0 
     
     robot.write_root_state_to_sim(root_state, env_ids=env_ids)
