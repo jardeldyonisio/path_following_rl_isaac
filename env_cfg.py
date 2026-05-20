@@ -110,8 +110,8 @@ class RewardsCfg:
     # angular_velocity_penalty = RewardTermCfg(func=mdp.angular_velocity_penalty, weight=1.0)
     direction_penalty = RewardTermCfg(func=mdp.direction_penalty, weight=1.0)
     truncated_penalty = RewardTermCfg(func=mdp.truncated_penalty, weight=1.0)
-    alive_penalty = RewardTermCfg(func=mdp.alive_penalty, weight=1.0)
-    reverse_penalty = RewardTermCfg(func=mdp.reverse_penalty, weight=10.0)
+    # alive_penalty = RewardTermCfg(func=mdp.alive_penalty, weight=1.0)
+    # reverse_penalty = RewardTermCfg(func=mdp.reverse_penalty, weight=1.0)
 
 @configclass
 class TerminationsCfg:
